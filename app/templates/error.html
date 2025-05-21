@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+        <h1 class="h2">Error</h1>
+    </div>
+
+    <div class="alert alert-danger">
+        <h4>An Error Occurred</h4>
+        <p>{{ error }}</p>
+    </div>
+
+    <a href="{{ url_for('index') }}" class="btn btn-primary">Back to Dashboard</a>
+{% endblock %}

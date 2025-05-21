@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+        <h1 class="h2">Snapshot Details</h1>
+        <div class="btn-toolbar mb-2 mb-md-0">
+            <div class="btn-group me-2">
+                <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5>Snapshot Information</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <p><strong>Timestamp:</strong> {{ snapshot.timestamp }}</p>
+                    <p><strong>Total Cost:</strong> ${{ "%.2f"|format(snapshot.total_cost) }}</p>
+                    <p><strong>Storage Used:</strong> {{ (snapshot.total_storage_bytes / (1024*1024*1024))|round(2) }} GB</p>
+                    <p><strong>Download Volume:</strong> {{ (snapshot.total_download_bytes / (1024*1024*1024))|round(2) }} GB</p>
+                </div>
+                <div class="col-md-6">
+                    <p><strong>Storage Cost:</strong> ${{ "%.2f"|format(snapshot.total_storage_cost) }}</p>
+                    <p><strong>Download Cost:</strong> ${{ "%.2f"|format(snapshot.total_download_cost) }}</p>
+                    <p><strong>API Calls:</strong> {{ snapshot.total_api_calls }}</p>
+                    <p><strong>API Cost:</strong> ${{ "%.2f"|format(snapshot.total_api_cost) }}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5>Cost Breakdown</h5>
+        </div>
+        <div class="card-body">
+            <canvas id="costBreakdownChart" width="400" height="200"></canvas>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5>Bucket Breakdown</h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Bucket Name</th>
+                            <th>Storage</th>
+                            <th>Storage Cost</th>
+                            <th>Download</th>
+                            <th>Download Cost</th>
+                            <th>API Calls</th>
+                            <th>API Cost</th>
+                            <th>Total Cost</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for bucket in snapshot.buckets %}
+                        <tr>
+                            <td>{{ bucket.bucket_name }}</td>
+                            <td>{{ (bucket.storage_bytes / (1024*1024*1024))|round(2) }} GB</td>
+                            <td>${{ "%.2f"|format(bucket.storage_cost) }}</td>
+                            <td>{{ (bucket.download_bytes / (1024*1024*1024))|round(2) }} GB</td>
+                            <td>${{ "%.2f"|format(bucket.download_cost) }}</td>
+                            <td>{{ bucket.api_calls }}</td>
+                            <td>${{ "%.2f"|format(bucket.api_cost) }}</td>
+                            <td>${{ "%.2f"|format(bucket.total_cost) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5>Bucket Cost Distribution</h5>
+        </div>
+        <div class="card-body">
+            <canvas id="bucketDistributionChart" width="400" height="300"></canvas>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Cost breakdown chart
+        var ctxCost = document.getElementById('costBreakdownChart').getContext('2d');
+        var costBreakdownChart = new Chart(ctxCost, {
+            type: 'pie',
+            data: {
+                labels: ['Storage Cost', 'Download Cost', 'API Cost'],
+                datasets: [{
+                    data: [
+                        {{ snapshot.total_storage_cost }},
+                        {{ snapshot.total_download_cost }},
+                        {{ snapshot.total_api_cost }}
+                    ],
+                    backgroundColor: [
+                        'rgba(255, 99, 132, 0.7)',
+                        'rgba(54, 162, 235, 0.7)',
+                        'rgba(255, 206, 86, 0.7)'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                var label = context.label || '';
+                                var value = context.raw || 0;
+                                return label + ': $' + value.toFixed(2);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Bucket cost distribution chart
+        var ctxBucket = document.getElementById('bucketDistributionChart').getContext('2d');
+        var bucketData = {
+            labels: [
+                {% for bucket in snapshot.buckets %}
+                    '{{ bucket.bucket_name }}',
+                {% endfor %}
+            ],
+            datasets: [{
+                label: 'Total Cost',
+                data: [
+                    {% for bucket in snapshot.buckets %}
+                        {{ bucket.total_cost }},
+                    {% endfor %}
+                ],
+                backgroundColor: [
+                    {% for bucket in snapshot.buckets %}
+                    'rgba(' + Math.floor(Math.random() * 255) + ', ' + 
+                               Math.floor(Math.random() * 255) + ', ' + 
+                               Math.floor(Math.random() * 255) + ', 0.7)',
+                    {% endfor %}
+                ]
+            }]
+        };
+
+        var bucketDistributionChart = new Chart(ctxBucket, {
+            type: 'bar',
+            data: bucketData,
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                scales: {
+                    x: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) {
+                                return '$' + value.toFixed(2);
+                            }
+                        }
+                    }
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                var label = context.dataset.label || '';
+                                var value = context.raw || 0;
+                                return label + ': $' + value.toFixed(2);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    });
+    </script>
+{% endblock %}

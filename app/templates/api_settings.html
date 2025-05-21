@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+        <h1 class="h2">Backblaze API Settings</h1>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>API Credentials</h5>
+                </div>
+                <div class="card-body">
+                    <p>Configure your Backblaze B2 API credentials for accessing your storage data.</p>
+
+                    {% if has_env_b2_credentials %}
+                    <div class="alert alert-info">
+                        API credentials are currently set via environment variables (<code>B2_APPLICATION_KEY_ID</code> and <code>B2_APPLICATION_KEY</code>). To manage credentials here, please unset these environment variables.
+                    </div>
+                    {% else %}
+                    <form method="POST" action="{{ url_for('api_settings') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="form_type" value="b2_native_creds">
+                        <div class="mb-3">
+                            <label for="keyId" class="form-label">Application Key ID</label>
+                            <input type="text" class="form-control" id="keyId" name="b2_key_id" value="{{ b2_credentials_stored.key_id if b2_credentials_stored else '' }}" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="applicationKey" class="form-label">Application Key</label>
+                            <div class="input-group">
+                                <input type="password" class="form-control" id="applicationKey" name="b2_application_key" value="{{ b2_credentials_stored.application_key if b2_credentials_stored else '' }}" required>
+                                <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility()">Show</button>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Save Credentials</button>
+                        {% if b2_credentials_stored %}
+                        {# Changed to a form for CSRF protection #}
+                        <form method="POST" action="{{ url_for('delete_api_credentials') }}" style="display: inline;">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete your stored credentials?')">Delete Credentials</button>
+                        </form>
+                        {% endif %}
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h5>Performance Settings</h5>
+                </div>
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('save_performance_settings') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <div class="mb-3">
+                            <label for="parallelOperations" class="form-label">Parallel Bucket Processing</label>
+                            <input type="number" class="form-control" id="parallelOperations" name="parallel_operations" value="{{ parallel_operations | default(8) }}" min="1" max="32">
+                            <div class="form-text">Number of buckets to process in parallel during a snapshot (Default: 8). Higher values may speed up snapshots but increase resource usage.</div>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Save Settings</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5>Information</h5>
+                </div>
+                <div class="card-body">
+                    <p><strong>API Credentials:</strong> Your Backblaze B2 Application Key ID and Application Key are required to access your account data. You can create these from your Backblaze account under "App Keys".</p>
+                    <p><strong>Security:</strong> If you set credentials via environment variables, they will take precedence over credentials saved here. For enhanced security, consider using environment variables in production environments.</p>
+                    <p><strong>Parallel Processing:</strong> Adjusting the number of parallel bucket processing operations can impact snapshot duration and system load. Monitor performance when changing this value.</p>
+                </div>
+            </div>
+
+            <div class="card mt-4">
+                <div class="card-header">
+                    <h5 class="mb-0">Backblaze S3 Compatible API Credentials</h5>
+                </div>
+                <div class="card-body">
+                    {% if has_env_s3_credentials %}
+                        <div class="alert alert-info">
+                            S3 credentials are set via environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, B2_S3_ENDPOINT_URL). 
+                            Environment variables override settings here.
+                        </div>
+                    {% elif s3_credentials_stored %}
+                        <p>S3 API credentials are currently stored. Key ID: <code>{{ s3_credentials_stored.aws_access_key_id[:4] }}...{{ s3_credentials_stored.aws_access_key_id[-4:] }}</code>, Endpoint: <code>{{ s3_credentials_stored.endpoint_url }}</code></p>
+                        <form method="POST" action="{{ url_for('delete_api_credentials') }}" class="d-inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="credential_type" value="s3">
+                            <button type="submit" class="btn btn-danger btn-sm">Delete Stored S3 Credentials</button>
+                        </form>
+                        <hr>
+                        <p class="mt-2"><em>To update, delete the current ones and then add new credentials.</em></p>
+                    {% else %}
+                        <p>No S3 API credentials are currently stored in the application. You can add them below if not using environment variables.</p>
+                        <form method="POST" action="{{ url_for('api_settings') }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="form_type" value="s3_creds">
+                            <div class="mb-3">
+                                <label for="s3_key_id" class="form-label">S3 Key ID (Application Key ID)</label>
+                                <input type="text" class="form-control" id="s3_key_id" name="s3_key_id" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="s3_secret_key" class="form-label">S3 Secret Key (Application Key)</label>
+                                <input type="password" class="form-control" id="s3_secret_key" name="s3_secret_key" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="s3_endpoint_url" class="form-label">S3 Endpoint URL</label>
+                                <input type="url" class="form-control" id="s3_endpoint_url" name="s3_endpoint_url" placeholder="https://s3.region.backblazeb2.com" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="s3_region_name" class="form-label">S3 Region Name (Optional)</label>
+                                <input type="text" class="form-control" id="s3_region_name" name="s3_region_name" placeholder="e.g., us-west-004">
+                            </div>
+                            <button type="submit" class="btn btn-primary">Save S3 Credentials</button>
+                        </form>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function togglePasswordVisibility() {
+            const passwordField = document.getElementById('applicationKey');
+            const button = passwordField.nextElementSibling;
+            if (passwordField.type === 'password') {
+                passwordField.type = 'text';
+                button.textContent = 'Hide';
+            } else {
+                passwordField.type = 'password';
+                button.textContent = 'Show';
+            }
+        }
+    </script>
+{% endblock %}

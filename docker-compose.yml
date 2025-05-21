@@ -1,0 +1,57 @@
+version: '3.8'
+
+networks:
+  bbssr-network:
+    driver: bridge
+
+services:
+  web:
+    container_name: bbssr-web
+    build: .
+    ports:
+      - "${APP_PORT:-5000}:5000"
+    volumes:
+      - backblaze_data:/data
+    user: "appuser"
+    restart: unless-stopped
+    networks:
+      - bbssr-network
+    environment:
+      - B2_APPLICATION_KEY_ID=${B2_APPLICATION_KEY_ID}
+      - B2_APPLICATION_KEY=${B2_APPLICATION_KEY}
+      - SNAPSHOT_INTERVAL_HOURS=${SNAPSHOT_INTERVAL_HOURS:-24}
+      - COST_CHANGE_THRESHOLD=${COST_CHANGE_THRESHOLD:-10.0}
+      - SECRET_KEY=${SECRET_KEY:-default-dev-key-change-in-production}
+      - DEBUG=${DEBUG:-False}
+      - STORAGE_COST_PER_GB=${STORAGE_COST_PER_GB:-0.005}
+      - DOWNLOAD_COST_PER_GB=${DOWNLOAD_COST_PER_GB:-0.01}
+      - CLASS_A_TRANSACTION_COST=${CLASS_A_TRANSACTION_COST:-0.004}
+      - CLASS_B_TRANSACTION_COST=${CLASS_B_TRANSACTION_COST:-0.0004}
+      - API_CACHE_TTL=${API_CACHE_TTL:-3600}
+      - BUCKET_STATS_CACHE_HOURS=${BUCKET_STATS_CACHE_HOURS:-24}
+      - MAX_FILES_PER_BUCKET=${MAX_FILES_PER_BUCKET:-10000}
+      - USE_ACCURATE_BUCKET_SIZE=${USE_ACCURATE_BUCKET_SIZE:-True}
+      - USE_S3_API=${USE_S3_API:-True}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+      
+  cloudflared:
+    container_name: bbssr-cloudflared
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles: ["with-cloudflared"]
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
+    networks:
+      - bbssr-network
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  backblaze_data:

@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% block title %}Snapshot Schedule Settings{% endblock %}
+
+{% block content %}
+<div class="container my-4">
+    <div class="row">
+        <div class="col">
+            <h1 class="mb-4">Snapshot Schedule Settings</h1>
+            
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ category }}" role="alert">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">Configure Snapshot Schedule</h5>
+                </div>                <div class="card-body">
+                    <form method="post" action="{{ url_for('schedule_routes.save_schedule_settings') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <div class="form-group mb-3">
+                            <label for="schedule_type">Schedule Type</label>
+                            <select class="form-control" id="schedule_type" name="schedule_type" onchange="updateScheduleForm()">
+                                <option value="interval" {% if settings.schedule_type == 'interval' %}selected{% endif %}>Interval (Every X Hours)</option>
+                                <option value="daily" {% if settings.schedule_type == 'daily' %}selected{% endif %}>Daily</option>
+                                <option value="weekly" {% if settings.schedule_type == 'weekly' %}selected{% endif %}>Weekly</option>
+                                <option value="monthly" {% if settings.schedule_type == 'monthly' %}selected{% endif %}>Monthly</option>
+                            </select>
+                            <small class="text-muted">Choose how often snapshots should be taken</small>
+                        </div>
+                        
+                        <!-- Interval settings -->
+                        <div class="form-group mb-3" id="interval-settings">
+                            <label for="interval_hours">Hours Between Snapshots</label>
+                            <input type="number" class="form-control" id="interval_hours" name="interval_hours" 
+                                value="{{ settings.interval_hours }}" min="1" max="168" required>
+                            <small class="text-muted">Number of hours between each snapshot (1-168)</small>
+                        </div>
+                        
+                        <!-- Time settings for daily, weekly, monthly schedules -->
+                        <div class="row mb-3" id="time-settings">
+                            <div class="col-md-6">
+                                <label for="hour">Hour of Day</label>
+                                <select class="form-control" id="hour" name="hour">
+                                    {% for h in range(24) %}
+                                        <option value="{{ h }}" {% if settings.hour == h %}selected{% endif %}>
+                                            {{ '%02d'|format(h) }}:00 ({{ h if h < 12 else h - 12 if h > 12 else 12 }}{{ 'am' if h < 12 else 'pm' }})
+                                        </option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="minute">Minute</label>
+                                <select class="form-control" id="minute" name="minute">
+                                    {% for m in [0, 15, 30, 45] %}
+                                        <option value="{{ m }}" {% if settings.minute == m %}selected{% endif %}>{{ '%02d'|format(m) }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-12">
+                                <small class="text-muted">Time when snapshots will be taken</small>
+                            </div>
+                        </div>
+                        
+                        <!-- Weekly settings -->
+                        <div class="form-group mb-3" id="weekly-settings">
+                            <label for="day_of_week">Day of Week</label>
+                            <select class="form-control" id="day_of_week" name="day_of_week">
+                                <option value="0" {% if settings.day_of_week == 0 %}selected{% endif %}>Monday</option>
+                                <option value="1" {% if settings.day_of_week == 1 %}selected{% endif %}>Tuesday</option>
+                                <option value="2" {% if settings.day_of_week == 2 %}selected{% endif %}>Wednesday</option>
+                                <option value="3" {% if settings.day_of_week == 3 %}selected{% endif %}>Thursday</option>
+                                <option value="4" {% if settings.day_of_week == 4 %}selected{% endif %}>Friday</option>
+                                <option value="5" {% if settings.day_of_week == 5 %}selected{% endif %}>Saturday</option>
+                                <option value="6" {% if settings.day_of_week == 6 %}selected{% endif %}>Sunday</option>
+                            </select>
+                            <small class="text-muted">Day of the week when snapshots will be taken</small>
+                        </div>
+                        
+                        <!-- Monthly settings -->
+                        <div class="form-group mb-3" id="monthly-settings">
+                            <label for="day_of_month">Day of Month</label>
+                            <select class="form-control" id="day_of_month" name="day_of_month">
+                                {% for d in range(1, 29) %}
+                                    <option value="{{ d }}" {% if settings.day_of_month == d %}selected{% endif %}>{{ d }}</option>
+                                {% endfor %}
+                                <option value="29" {% if settings.day_of_month == 29 %}selected{% endif %}>29 (except Feb in non-leap years)</option>
+                                <option value="30" {% if settings.day_of_month == 30 %}selected{% endif %}>30 (except Feb)</option>
+                                <option value="31" {% if settings.day_of_month == 31 %}selected{% endif %}>31 (where applicable)</option>
+                            </select>
+                            <small class="text-muted">Day of the month when snapshots will be taken (if the day doesn't exist in a month, the last day will be used)</small>
+                        </div>
+                        
+                        <div class="form-group mb-3">
+                            <label for="retain_days">Data Retention (Days)</label>
+                            <input type="number" class="form-control" id="retain_days" name="retain_days" 
+                                value="{{ settings.retain_days }}" min="7" required>
+                            <small class="text-muted">Number of days to keep snapshot data before automatic cleanup</small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <button type="submit" class="btn btn-primary">Save Schedule Settings</button>
+                            <button type="button" class="btn btn-outline-secondary ms-2" onclick="location.href='{{ url_for('snapshots') }}'">Back to Snapshots</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Recent Snapshots</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Snapshot ID</th>
+                                    <th>Timestamp</th>
+                                    <th>Total Cost</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for snapshot in snapshots %}
+                                <tr>
+                                    <td>{{ snapshot.id }}</td>
+                                    <td>{{ snapshot.timestamp }}</td>
+                                    <td>${{ "%.2f"|format(snapshot.total_cost) }}</td>
+                                    <td>
+                                        <a href="{{ url_for('view_snapshot', snapshot_id=snapshot.id) }}" class="btn btn-sm btn-info">View</a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function updateScheduleForm() {
+    const scheduleType = document.getElementById('schedule_type').value;
+    
+    // Show/hide appropriate sections based on schedule type
+    document.getElementById('interval-settings').style.display = 
+        (scheduleType === 'interval') ? 'block' : 'none';
+        
+    document.getElementById('time-settings').style.display = 
+        (scheduleType !== 'interval') ? 'flex' : 'none';
+        
+    document.getElementById('weekly-settings').style.display = 
+        (scheduleType === 'weekly') ? 'block' : 'none';
+        
+    document.getElementById('monthly-settings').style.display = 
+        (scheduleType === 'monthly') ? 'block' : 'none';
+}
+
+// Initial setup
+document.addEventListener('DOMContentLoaded', function() {
+    updateScheduleForm();
+});
+</script>
+{% endblock %}

@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+        <h1 class="h2">Cost Report</h1>
+        <div class="btn-toolbar mb-2 mb-md-0">
+            <div class="btn-group me-2">
+                <button onclick="window.print()" class="btn btn-sm btn-outline-secondary">Print Report</button>
+            </div>
+            <div class="btn-group">
+                <a href="{{ url_for('generate_report', snapshot_id=snapshot.id, format='json') }}" class="btn btn-sm btn-outline-secondary">Export JSON</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5>Report Details</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <p><strong>Snapshot Date:</strong> {{ snapshot.timestamp }}</p>
+                    <p><strong>Report Generated:</strong> {{ now.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+                </div>
+                <div class="col-md-6">
+                    <p><strong>Report Type:</strong> {{ report_type|capitalize }}</p>
+                    <p><strong>Snapshot ID:</strong> {{ snapshot.id }}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-6 mb-4">
+            <div class="card h-100">
+                <div class="card-header">
+                    <h5>Cost Summary</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Category</th>
+                                    <th class="text-end">Daily Cost (USD)</th>
+                                    <th class="text-end">Monthly Est. (USD)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>Storage</td>
+                                    <td class="text-end">${{ "%.2f"|format(snapshot.total_storage_cost) }}</td>
+                                    <td class="text-end">${{ "%.2f"|format(snapshot.total_storage_cost * 30) }}</td>
+                                </tr>
+                                <tr>
+                                    <td>Downloads</td>
+                                    <td class="text-end">${{ "%.2f"|format(snapshot.total_download_cost) }}</td>
+                                    <td class="text-end">${{ "%.2f"|format(snapshot.total_download_cost * 30) }}</td>
+                                </tr>
+                                <tr>
+                                    <td>API Transactions</td>
+                                    <td class="text-end">${{ "%.2f"|format(snapshot.total_api_cost) }}</td>
+                                    <td class="text-end">${{ "%.2f"|format(snapshot.total_api_cost * 30) }}</td>
+                                </tr>
+                                <tr class="table-active fw-bold">
+                                    <td>Total</td>
+                                    <td class="text-end">${{ "%.2f"|format(snapshot.total_cost) }}</td>
+                                    <td class="text-end">${{ "%.2f"|format(snapshot.total_cost * 30) }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6 mb-4">
+            <div class="card h-100">
+                <div class="card-header">
+                    <h5>Usage Summary</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Category</th>
+                                    <th class="text-end">Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>Total Storage</td>
+                                    <td class="text-end">{{ snapshot.total_storage_bytes|filesizeformat }}</td>
+                                </tr>
+                                <tr>
+                                    <td>Downloads</td>
+                                    <td class="text-end">{{ snapshot.total_download_bytes|filesizeformat }}</td>
+                                </tr>
+                                <tr>
+                                    <td>API Calls</td>
+                                    <td class="text-end">{{ "{:,}".format(snapshot.total_api_calls) }}</td>
+                                </tr>
+                                <tr>
+                                    <td>Storage Rate</td>
+                                    <td class="text-end">${{ "%.3f"|format(snapshot.raw_data.pricing.storage_cost_per_gb or 0.005) }}/GB/mo</td>
+                                </tr>
+                                <tr>
+                                    <td>Download Rate</td>
+                                    <td class="text-end">${{ "%.3f"|format(snapshot.raw_data.pricing.download_cost_per_gb or 0.01) }}/GB</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5>Bucket Breakdown</h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped table-sm">
+                    <thead>
+                        <tr>
+                            <th>Bucket</th>
+                            <th class="text-end">Storage</th>
+                            <th class="text-end">Files</th>
+                            <th class="text-end">Storage Cost</th>
+                            <th class="text-end">Download Cost</th>
+                            <th class="text-end">API Cost</th>
+                            <th class="text-end">Total Cost</th>
+                            <th class="text-end">% of Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for bucket in snapshot.buckets %}
+                            <tr>
+                                <td>{{ bucket.name }}</td>
+                                <td class="text-end">{{ bucket.storage_bytes|filesizeformat }}</td>
+                                <td class="text-end">{{ "{:,}".format(bucket.files_count) }}</td>
+                                <td class="text-end">${{ "%.2f"|format(bucket.storage_cost) }}</td>
+                                <td class="text-end">${{ "%.2f"|format(bucket.download_cost) }}</td>
+                                <td class="text-end">${{ "%.2f"|format(bucket.api_cost) }}</td>
+                                <td class="text-end">${{ "%.2f"|format(bucket.total_cost) }}</td>
+                                <td class="text-end">{{ "%.1f%%"|format((bucket.total_cost / snapshot.total_cost) * 100) }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    {% if report_type == 'detailed' %}
+        <div class="card mb-4 page-break">
+            <div class="card-header">
+                <h5>Largest Files</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-sm">
+                        <thead>
+                            <tr>
+                                <th>Bucket</th>
+                                <th>File Name</th>
+                                <th class="text-end">Size</th>
+                                <th>Upload Date</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for bucket in snapshot.buckets %}
+                                {% if bucket.largest_files %}
+                                    {% for file in bucket.largest_files %}
+                                        <tr>
+                                            <td>{{ bucket.name }}</td>
+                                            <td>{{ file.fileName }}</td>
+                                            <td class="text-end">{{ file.size|filesizeformat }}</td>
+                                            <td>
+                                                {% if file.uploadTimestamp %}
+                                                    {{ (file.uploadTimestamp / 1000)|int|timestamp_to_datetime }}
+                                                {% else %}
+                                                    Unknown
+                                                {% endif %}
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                {% endif %}
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    {% endif %}
+
+    <div class="no-print text-center mt-4 mb-4">
+        <a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Dashboard</a>
+    </div>
+{% endblock %}

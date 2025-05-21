@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+
+{% block title %}Notification Settings{% endblock %}
+
+{% block content %}
+<div class="container my-4">
+    <div class="row">
+        <div class="col">
+            <h1 class="mb-4">Notification Settings</h1>
+            
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ category }}" role="alert">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">Email Notification Configuration</h5>
+                </div>
+                <div class="card-body">
+                    <form method="post" action="{{ url_for('save_settings') }}">
+                        <div class="form-group mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="email_enabled" name="email_enabled" 
+                                    {% if settings.email_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="email_enabled">Enable Email Notifications</label>
+                            </div>
+                            <small class="text-muted">When enabled, notifications will be sent for significant cost changes</small>
+                        </div>
+                        
+                        <div class="form-group mb-3">
+                            <label for="cost_threshold">Cost Change Threshold (%)</label>
+                            <input type="number" class="form-control" id="cost_threshold" name="cost_threshold" 
+                                value="{{ settings.cost_threshold }}" min="1" max="100" step="0.1" required>
+                            <small class="text-muted">Percentage change that triggers a notification</small>
+                        </div>
+                        
+                        <div class="form-group mb-3">
+                            <label for="email_recipients">Email Recipients</label>
+                            <input type="text" class="form-control" id="email_recipients" name="email_recipients" 
+                                value="{{ settings.email_recipients }}" placeholder="email1@example.com, email2@example.com">
+                            <small class="text-muted">Comma-separated list of email recipients</small>
+                        </div>
+                        
+                        <hr>
+                        <h5 class="mb-3">SMTP Server Settings</h5>
+                        
+                        <div class="form-group mb-3">
+                            <label for="email_sender">Sender Email Address</label>
+                            <input type="email" class="form-control" id="email_sender" name="email_sender" 
+                                value="{{ settings.email_sender }}" placeholder="notifications@yourdomain.com">
+                        </div>
+                        
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label for="email_server">SMTP Server</label>
+                                <input type="text" class="form-control" id="email_server" name="email_server" 
+                                    value="{{ settings.email_server }}" placeholder="smtp.example.com">
+                            </div>
+                            <div class="col-md-4">
+                                <label for="email_port">Port</label>
+                                <input type="number" class="form-control" id="email_port" name="email_port" 
+                                    value="{{ settings.email_port }}" placeholder="587">
+                            </div>
+                        </div>
+                        
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="email_username">SMTP Username</label>
+                                <input type="text" class="form-control" id="email_username" name="email_username" 
+                                    value="{{ settings.email_username }}" placeholder="your_username">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="email_password">SMTP Password</label>
+                                <input type="password" class="form-control" id="email_password" name="email_password" 
+                                    value="{{ settings.email_password }}" placeholder="•••••••••••">
+                            </div>
+                        </div>
+                        
+                        <div class="form-group mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="email_use_tls" name="email_use_tls" 
+                                    {% if settings.email_use_tls %}checked{% endif %}>
+                                <label class="form-check-label" for="email_use_tls">Use TLS</label>
+                            </div>
+                        </div>
+                        
+                        <div class="d-flex justify-content-between mt-4">
+                            <button type="submit" class="btn btn-primary">Save Settings</button>
+                            <button type="button" class="btn btn-outline-success" id="test-email-btn">
+                                Test Email Configuration
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Notification History</h5>
+                </div>
+                <div class="card-body">
+                    {% if notification_history %}
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Type</th>
+                                    <th>Details</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for notification in notification_history %}
+                                <tr>
+                                    <td>{{ notification.timestamp }}</td>
+                                    <td>{{ notification.type }}</td>
+                                    <td>{{ notification.details }}</td>
+                                    <td>
+                                        {% if notification.status == 'success' %}
+                                            <span class="badge bg-success">Success</span>
+                                        {% else %}
+                                            <span class="badge bg-danger">Failed</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% else %}
+                        <p class="text-muted">No notification history available.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Test Email Modal -->
+<div class="modal fade" id="testEmailModal" tabindex="-1" aria-labelledby="testEmailModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="testEmailModalLabel">Test Email Notification</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Testing email configuration. A test email will be sent to the configured recipients.</p>
+                <div id="testEmailResult" class="alert alert-info d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="sendTestEmail">Send Test Email</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Test email button click handler
+        document.getElementById('test-email-btn').addEventListener('click', function() {
+            var testEmailModal = new bootstrap.Modal(document.getElementById('testEmailModal'));
+            testEmailModal.show();
+        });
+        
+        // Send test email handler
+        document.getElementById('sendTestEmail').addEventListener('click', function() {
+            const resultDiv = document.getElementById('testEmailResult');
+            resultDiv.innerHTML = 'Sending test email...';
+            resultDiv.classList.remove('d-none', 'alert-success', 'alert-danger');
+            resultDiv.classList.add('alert-info');
+            
+            fetch('/api/test-email')
+                .then(response => response.json())
+                .then(data => {
+                    resultDiv.classList.remove('alert-info');
+                    if (data.status === 'success') {
+                        resultDiv.classList.add('alert-success');
+                        resultDiv.innerHTML = '<i class="fas fa-check-circle"></i> ' + data.message;
+                    } else {
+                        resultDiv.classList.add('alert-danger');
+                        resultDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> ' + data.message;
+                    }
+                })
+                .catch(error => {
+                    resultDiv.classList.remove('alert-info');
+                    resultDiv.classList.add('alert-danger');
+                    resultDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> Error: ' + error.message;
+                });
+        });
+    });
+</script>
+{% endblock %}

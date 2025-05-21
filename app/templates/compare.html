@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+        <h1 class="h2">Cost Comparison</h1>
+        <div class="btn-toolbar mb-2 mb-md-0">
+            <div class="btn-group me-2">
+                <button id="downloadReportBtn" class="btn btn-sm btn-outline-secondary">Download Report</button>
+            </div>
+        </div>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    {% if not snapshot1 or not snapshot2 %}
+        <div class="card">
+            <div class="card-header">
+                <h5>Select Snapshots to Compare</h5>
+            </div>
+            <div class="card-body">
+                <form method="GET" action="{{ url_for('compare_snapshots') }}">
+                    <div class="row mb-3">
+                        <div class="col-md-5">
+                            <label for="snapshot1" class="form-label">First Snapshot</label>
+                            <select name="snapshot1" id="snapshot1" class="form-select" required>
+                                <option value="">Select a snapshot...</option>
+                                {% for snapshot in snapshots %}
+                                    <option value="{{ snapshot.id }}">
+                                        {{ snapshot.timestamp }} (ID: {{ snapshot.id }})
+                                    </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-2 d-flex align-items-center justify-content-center">
+                            <span class="fs-4 mt-4">VS</span>
+                        </div>
+                        <div class="col-md-5">
+                            <label for="snapshot2" class="form-label">Second Snapshot</label>
+                            <select name="snapshot2" id="snapshot2" class="form-select" required>
+                                <option value="">Select a snapshot...</option>
+                                {% for snapshot in snapshots %}
+                                    <option value="{{ snapshot.id }}">
+                                        {{ snapshot.timestamp }} (ID: {{ snapshot.id }})
+                                    </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    <div class="text-center">
+                        <button type="submit" class="btn btn-primary">Compare</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    {% else %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <div class="row">
+                    <div class="col-md-5 text-center">
+                        <strong>Snapshot 1:</strong> {{ snapshot1.timestamp }}
+                    </div>
+                    <div class="col-md-2 text-center">
+                        <i class="bi bi-arrow-right"></i>
+                    </div>
+                    <div class="col-md-5 text-center">
+                        <strong>Snapshot 2:</strong> {{ snapshot2.timestamp }}
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <h5 class="card-title">Cost Summary Comparison</h5>
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Category</th>
+                                <th>Snapshot 1</th>
+                                <th>Snapshot 2</th>
+                                <th>Difference</th>
+                                <th>Change</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Storage Cost</td>
+                                <td>${{ "%.2f"|format(snapshot1.total_storage_cost) }}</td>
+                                <td>${{ "%.2f"|format(snapshot2.total_storage_cost) }}</td>
+                                <td>${{ "%.2f"|format(differences.storage_cost) }}</td>
+                                <td>
+                                    <span class="{% if differences.storage_cost > 0 %}change-increase{% elif differences.storage_cost < 0 %}change-decrease{% endif %}">
+                                        {{ "%+.2f%%"|format(percent_changes.storage_cost) }}
+                                    </span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Download Cost</td>
+                                <td>${{ "%.2f"|format(snapshot1.total_download_cost) }}</td>
+                                <td>${{ "%.2f"|format(snapshot2.total_download_cost) }}</td>
+                                <td>${{ "%.2f"|format(differences.download_cost) }}</td>
+                                <td>
+                                    <span class="{% if differences.download_cost > 0 %}change-increase{% elif differences.download_cost < 0 %}change-decrease{% endif %}">
+                                        {{ "%+.2f%%"|format(percent_changes.download_cost) }}
+                                    </span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>API Cost</td>
+                                <td>${{ "%.2f"|format(snapshot1.total_api_cost) }}</td>
+                                <td>${{ "%.2f"|format(snapshot2.total_api_cost) }}</td>
+                                <td>${{ "%.2f"|format(differences.api_cost) }}</td>
+                                <td>
+                                    <span class="{% if differences.api_cost > 0 %}change-increase{% elif differences.api_cost < 0 %}change-decrease{% endif %}">
+                                        {{ "%+.2f%%"|format(percent_changes.api_cost) }}
+                                    </span>
+                                </td>
+                            </tr>
+                            <tr class="table-active fw-bold">
+                                <td>Total Cost</td>
+                                <td>${{ "%.2f"|format(snapshot1.total_cost) }}</td>
+                                <td>${{ "%.2f"|format(snapshot2.total_cost) }}</td>
+                                <td>${{ "%.2f"|format(differences.total_cost) }}</td>
+                                <td>
+                                    <span class="{% if differences.total_cost > 0 %}change-increase{% elif differences.total_cost < 0 %}change-decrease{% endif %}">
+                                        {{ "%+.2f%%"|format(percent_changes.total_cost) }}
+                                    </span>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h5>Bucket Comparison</h5>
+                <p class="card-text">Sorted by largest cost difference</p>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-sm">
+                        <thead>
+                            <tr>
+                                <th>Bucket</th>
+                                <th>Storage Before</th>
+                                <th>Storage After</th>
+                                <th>Storage Change</th>
+                                <th>Cost Before</th>
+                                <th>Cost After</th>
+                                <th>Cost Difference</th>
+                                <th>Change</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for bucket in bucket_comparisons %}
+                                <tr>
+                                    <td>{{ bucket.name }}</td>
+                                    <td>{{ bucket.storage_bytes1|filesizeformat }}</td>
+                                    <td>{{ bucket.storage_bytes2|filesizeformat }}</td>
+                                    <td>
+                                        <span class="{% if bucket.storage_diff > 0 %}change-increase{% elif bucket.storage_diff < 0 %}change-decrease{% endif %}">
+                                            {{ bucket.storage_diff|filesizeformat }}
+                                        </span>
+                                    </td>
+                                    <td>${{ "%.2f"|format(bucket.total_cost1) }}</td>
+                                    <td>${{ "%.2f"|format(bucket.total_cost2) }}</td>
+                                    <td>${{ "%+.2f"|format(bucket.cost_diff) }}</td>
+                                    <td>
+                                        <span class="{% if bucket.cost_diff > 0 %}change-increase{% elif bucket.cost_diff < 0 %}change-decrease{% endif %}">
+                                            {{ "%+.2f%%"|format(bucket.cost_percent) }}
+                                        </span>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Hidden data for report generation -->
+        <input type="hidden" id="snapshot1Data" value="{{ snapshot1|tojson }}">
+        <input type="hidden" id="snapshot2Data" value="{{ snapshot2|tojson }}">
+        <input type="hidden" id="comparisonData" value="{{ {
+            'differences': differences, 
+            'percent_changes': percent_changes,
+            'bucket_comparisons': bucket_comparisons
+        }|tojson }}">
+    {% endif %}
+{% endblock %}

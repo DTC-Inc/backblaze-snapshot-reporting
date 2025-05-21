@@ -1,0 +1,365 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+        <h1 class="h2">Dashboard</h1>
+        <div class="btn-toolbar mb-2 mb-md-0">
+            <div class="btn-group me-2">
+                <form action="{{ url_for('new_snapshot') }}" method="post" id="newSnapshotForm">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" id="takeSnapshotBtn" class="btn btn-sm btn-outline-secondary">Take New Snapshot</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Snapshot Progress Section -->
+    <div id="snapshotProgressContainer" class="mb-4" style="display: none;">
+        <h5 id="snapshotStatusText">Snapshot in progress...</h5>
+        <div class="progress" style="height: 25px;">
+            <div id="snapshotProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+        </div>
+        <small id="snapshotMessageText" class="text-muted">Initializing...</small>
+        <div>
+            <a href="{{ url_for('snapshot_status_detail') }}" class="btn btn-sm btn-info mt-2" id="viewProgressDetailsBtn" style="display: none;">View Details</a>
+        </div>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}    {% if significant_changes %}
+    <div class="alert alert-warning">
+        <h4>Significant Cost Changes Detected!</h4>
+        <ul>
+            {% if 'total' in significant_changes %}
+            <li>
+                Total cost: 
+                ${{ "%.2f"|format(significant_changes['total']['from']) }} → 
+                ${{ "%.2f"|format(significant_changes['total']['to']) }}
+                ({{ "%+.2f%%"|format(significant_changes['total']['percent']) }})
+                <a href="{{ url_for('compare_snapshots') }}" class="btn btn-sm btn-outline-secondary ms-2">Compare Details</a>
+            </li>
+            {% endif %}
+            
+            {% if 'storage' in significant_changes %}
+            <li>
+                Storage cost: 
+                ${{ "%.2f"|format(significant_changes['storage']['from']) }} → 
+                ${{ "%.2f"|format(significant_changes['storage']['to']) }}
+                ({{ "%+.2f%%"|format(significant_changes['storage']['percent']) }})
+            </li>
+            {% endif %}
+            
+            {% if 'download' in significant_changes %}
+            <li>
+                Download cost: 
+                ${{ "%.2f"|format(significant_changes['download']['from']) }} → 
+                ${{ "%.2f"|format(significant_changes['download']['to']) }}
+                ({{ "%+.2f%%"|format(significant_changes['download']['percent']) }})
+            </li>
+            {% endif %}
+            
+            {% if 'api' in significant_changes %}
+            <li>
+                API cost: 
+                ${{ "%.2f"|format(significant_changes['api']['from']) }} → 
+                ${{ "%.2f"|format(significant_changes['api']['to']) }}
+                ({{ "%+.2f%%"|format(significant_changes['api']['percent']) }})
+            </li>
+            {% endif %}
+        </ul>
+        
+        {% if 'buckets' in significant_changes %}
+        <h5>Buckets with significant changes:</h5>
+        <ul>
+            {% for bucket_change in significant_changes['buckets'] %}
+            <li>
+                {{ bucket_change['bucket_name'] }}: 
+                ${{ "%.2f"|format(bucket_change['change']['from']) }} → 
+                ${{ "%.2f"|format(bucket_change['change']['to']) }}
+                ({{ "%+.2f%%"|format(bucket_change['change']['percent']) }})
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>Current Cost Summary</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <tbody>
+                                <tr>
+                                    <td>Storage Cost</td>
+                                    <td>${{ "%.2f"|format(snapshot.total_storage_cost) }}</td>
+                                </tr>
+                                <tr>
+                                    <td>Download Cost</td>
+                                    <td>${{ "%.2f"|format(snapshot.total_download_cost) }}</td>
+                                </tr>
+                                <tr>
+                                    <td>API Cost</td>
+                                    <td>${{ "%.2f"|format(snapshot.total_api_cost) }}</td>
+                                </tr>
+                                <tr class="table-active fw-bold">
+                                    <td>Total Cost</td>
+                                    <td>${{ "%.2f"|format(snapshot.total_cost) }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card-footer text-muted">
+                    Last snapshot: {{ snapshot.timestamp }}
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>Usage Summary</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <tbody>
+                                <tr>
+                                    <td>Storage Used</td>
+                                    <td>{{ (snapshot.total_storage_bytes / (1024*1024*1024))|round(2) }} GB</td>
+                                </tr>
+                                <tr>
+                                    <td>Download Volume</td>
+                                    <td>{{ (snapshot.total_download_bytes / (1024*1024*1024))|round(2) }} GB</td>
+                                </tr>
+                                <tr>
+                                    <td>API Calls</td>
+                                    <td>{{ snapshot.total_api_calls }}</td>
+                                </tr>
+                                <tr>
+                                    <td>Number of Buckets</td>
+                                    <td>{{ snapshot.buckets|length }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-6 mb-4">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Storage Breakdown</h5>
+                    <a href="{{ url_for('generate_report', snapshot_id=latest_snapshot_id, type='detailed') }}" class="btn btn-sm btn-outline-primary">
+                        Detailed Report
+                    </a>
+                </div>
+                <div class="card-body">
+                    <canvas id="storageBreakdownChart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6 mb-4">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Cost Trends (30 Days)</h5>
+                    <a href="{{ url_for('compare_snapshots') }}" class="btn btn-sm btn-outline-primary">
+                        Compare Costs
+                    </a>
+                </div>
+                <div class="card-body">
+                    <canvas id="costTrendsChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden data for charts -->
+    <input type="hidden" id="costTrendsData" value="{{ cost_trends|tojson }}">
+    <input type="hidden" id="bucketsData" value="{{ snapshot.buckets|tojson }}">
+    <input type="hidden" id="snapshotData" value="{{ snapshot|tojson }}">
+
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5>Bucket Breakdown</h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Bucket Name</th>
+                            <th>Storage</th>
+                            <th>Storage Cost</th>
+                            <th>Download</th>
+                            <th>Download Cost</th>
+                            <th>API Calls</th>
+                            <th>API Cost</th>
+                            <th>Total Cost</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for bucket in snapshot.buckets %}
+                        <tr>
+                            <td>{{ bucket.bucket_name }}</td>
+                            <td>{{ (bucket.storage_bytes / (1024*1024*1024))|round(2) }} GB</td>
+                            <td>${{ "%.2f"|format(bucket.storage_cost) }}</td>
+                            <td>{{ (bucket.download_bytes / (1024*1024*1024))|round(2) }} GB</td>
+                            <td>${{ "%.2f"|format(bucket.download_cost) }}</td>
+                            <td>{{ bucket.api_calls }}</td>
+                            <td>${{ "%.2f"|format(bucket.api_cost) }}</td>
+                            <td>${{ "%.2f"|format(bucket.total_cost) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Cost trends chart
+        var ctx = document.getElementById('costTrendsChart').getContext('2d');
+        
+        // Prepare data for chart
+        var trendData = {{ cost_trends|tojson }};
+        var labels = trendData.map(function(item) {
+            return new Date(item.timestamp).toLocaleDateString();
+        }).reverse();
+        
+        var storageCostData = trendData.map(function(item) {
+            return parseFloat(item.total_storage_cost);
+        }).reverse();
+        
+        var downloadCostData = trendData.map(function(item) {
+            return parseFloat(item.total_download_cost);
+        }).reverse();
+        
+        var apiCostData = trendData.map(function(item) {
+            return parseFloat(item.total_api_cost);
+        }).reverse();
+        
+        var totalCostData = trendData.map(function(item) {
+            return parseFloat(item.total_cost);
+        }).reverse();
+        
+        var costChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Total Cost',
+                        data: totalCostData,
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                        borderWidth: 2,
+                        fill: false
+                    },
+                    {
+                        label: 'Storage Cost',
+                        data: storageCostData,
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                        borderWidth: 1,
+                        fill: false
+                    },
+                    {
+                        label: 'Download Cost',
+                        data: downloadCostData,
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderWidth: 1,
+                        fill: false
+                    },
+                    {
+                        label: 'API Cost',
+                        data: apiCostData,
+                        borderColor: 'rgba(153, 102, 255, 1)',
+                        backgroundColor: 'rgba(153, 102, 255, 0.2)',
+                        borderWidth: 1,
+                        fill: false
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) {
+                                return '$' + value.toFixed(2);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        
+        // Storage breakdown chart
+        var storageCtx = document.getElementById('storageBreakdownChart').getContext('2d');
+        
+        // Prepare data for storage breakdown chart
+        var bucketsData = {{ snapshot.buckets|tojson }};
+        var bucketLabels = bucketsData.map(function(bucket) {
+            return bucket.bucket_name;
+        });
+        
+        var storageData = bucketsData.map(function(bucket) {
+            return bucket.storage_cost;
+        });
+        
+        var storageBreakdownChart = new Chart(storageCtx, {
+            type: 'doughnut',
+            data: {
+                labels: bucketLabels,
+                datasets: [{
+                    label: 'Storage Cost Breakdown',
+                    data: storageData,
+                    backgroundColor: bucketLabels.map(function(label, index) {
+                        return Chart.helpers.color(Chart.defaults.color).alpha(0.2).rgbString();
+                    }),
+                    borderColor: Chart.defaults.color,
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: {
+                        position: 'top',
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(tooltipItem) {
+                                var label = tooltipItem.label || '';
+                                if (label !== '') {
+                                    label += ': ';
+                                }
+                                label += '$' + tooltipItem.raw.toFixed(2);
+                                return label;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    });
+    </script>
+{% endblock %}

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backblaze Snapshot Reporting</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <header class="navbar navbar-dark sticky-top bg-dark flex-md-nowrap p-0 shadow">
+        <a class="navbar-brand col-md-3 col-lg-2 me-0 px-3" href="/">Backblaze Snapshot Reporting</a>
+        <button class="navbar-toggler position-absolute d-md-none collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#sidebarMenu" aria-controls="sidebarMenu" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+    </header>
+
+    <div class="container-fluid">
+        <div class="row">
+            <nav id="sidebarMenu" class="col-md-3 col-lg-2 d-md-block bg-light sidebar collapse">
+                <div class="position-sticky pt-3">
+                    <ul class="nav flex-column">
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.path == '/' %}active{% endif %}" href="/">
+                                Dashboard
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.path == '/compare' %}active{% endif %}" href="{{ url_for('compare_snapshots') }}">
+                                Cost Comparison
+                            </a>
+                        </li>                        <li class="nav-item">
+                            <a class="nav-link {% if request.path.startswith(url_for('schedule_routes.snapshots')) %}active{% endif %}" href="{{ url_for('schedule_routes.snapshots') }}">
+                                Snapshots History
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.path.startswith(url_for('schedule_routes.schedule_settings')) %}active{% endif %}" href="{{ url_for('schedule_routes.schedule_settings') }}">
+                                Snapshot Scheduling
+                            </a>
+                        </li>                        <li class="nav-item">
+                            <a class="nav-link {% if request.path.startswith(url_for('schedule_routes.notification_settings')) %}active{% endif %}" href="{{ url_for('schedule_routes.notification_settings') }}">
+                                Notification Settings
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.path == '/settings/api' %}active{% endif %}" href="{{ url_for('api_settings') }}">
+                                API Credentials
+                            </a>
+                        </li>                        <li class="nav-item mt-2">
+                            <form action="{{ url_for('new_snapshot') }}" method="post">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-sm btn-primary">Take New Snapshot</button>
+                            </form>
+                        </li>
+                    </ul>
+                </div>
+            </nav>
+
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+                {% block content %}{% endblock %}
+            </main>
+        </div>
+    </div>
+
+    <!-- Snapshots Modal -->
+    <div class="modal fade" id="snapshotsModal" tabindex="-1" aria-labelledby="snapshotsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="snapshotsModalLabel">Snapshots History</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    {% if snapshots %}
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Storage</th>
+                                    <th>Downloads</th>
+                                    <th>API Calls</th>
+                                    <th>Total Cost</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for snapshot in snapshots %}
+                                <tr>
+                                    <td>{{ snapshot.timestamp }}</td>
+                                    <td>${{ "%.2f"|format(snapshot.total_storage_cost) }}</td>
+                                    <td>${{ "%.2f"|format(snapshot.total_download_cost) }}</td>
+                                    <td>${{ "%.2f"|format(snapshot.total_api_cost) }}</td>
+                                    <td>${{ "%.2f"|format(snapshot.total_cost) }}</td>
+                                    <td>
+                                        <a href="{{ url_for('view_snapshot', snapshot_id=snapshot.id) }}" class="btn btn-sm btn-info">View</a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% else %}
+                        <p>No snapshots available yet.</p>
+                    {% endif %}
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>

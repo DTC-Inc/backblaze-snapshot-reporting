@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center">
+        <h2>Snapshot Progress Details</h2>
+        <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+    </div>
+    <hr/>
+
+    <!-- Overall Progress -->
+    <div class="mb-4">
+        <h4 id="overall_status_message">Status: Initializing...</h4>
+        <div class="progress" style="height: 25px;">
+            <div id="overall_progress_bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+        </div>
+        <p id="overall_buckets_processed_text" class="mt-1">Buckets: 0 / 0</p>
+    </div>
+
+    <!-- Current Bucket Processing -->
+    <div class="card mb-4" id="current_bucket_card" style="display: none;">
+        <div class="card-header">
+            Currently Processing: <strong id="current_bucket_name_display">N/A</strong>
+        </div>
+        <div class="card-body">
+            <p id="current_bucket_object_message">Initializing...</p>
+            <p id="current_bucket_objects_processed_count_text">Objects processed: 0</p>
+        </div>
+    </div>
+
+    <!-- List of All Buckets -->
+    <h4>All Buckets (<span id="total_bucket_count_list_header">0</span> total)</h4>
+    <ul class="list-group" id="bucket_status_list">
+        <!-- JS will populate this -->
+        <li class="list-group-item">Loading bucket details...</li>
+    </ul>
+</div>
+
+<script>
+    function updateSnapshotStatusPage() {
+        fetch("{{ url_for('get_snapshot_progress_route') }}")
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok: ' + response.statusText);
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Determine current snapshot status
+                let currentOverallStatus = 'idle';
+                if (data.error_message) {
+                    currentOverallStatus = 'error';
+                } else if (data.active) {
+                    currentOverallStatus = 'running';
+                } else if (!data.active && data.overall_percentage === 100 && data.end_time) {
+                    currentOverallStatus = 'completed';
+                } else if (!data.active && !data.start_time) {
+                    currentOverallStatus = 'idle';
+                }
+
+
+                // Overall Progress
+                document.getElementById('overall_status_message').textContent = data.status_message || 'Status: Fetching...';
+                const overallPercentage = data.overall_percentage || 0;
+                const overallProgressBar = document.getElementById('overall_progress_bar');
+                overallProgressBar.style.width = overallPercentage + '%';
+                overallProgressBar.textContent = overallPercentage + '%';
+                overallProgressBar.setAttribute('aria-valuenow', overallPercentage);
+                document.getElementById('overall_buckets_processed_text').textContent = 'Buckets: ' + (data.buckets_processed_count || 0) + ' / ' + (data.total_buckets || 0);
+
+                overallProgressBar.classList.remove('progress-bar-animated', 'progress-bar-striped', 'bg-primary', 'bg-success', 'bg-danger');
+                if (currentOverallStatus === 'running') {
+                    overallProgressBar.classList.add('bg-primary', 'progress-bar-animated', 'progress-bar-striped');
+                } else if (currentOverallStatus === 'completed') {
+                    overallProgressBar.classList.add('bg-success');
+                } else if (currentOverallStatus === 'error') {
+                    overallProgressBar.classList.add('bg-danger');
+                } else { // idle
+                    overallProgressBar.classList.add('bg-primary'); // Or a neutral color
+                }
+
+                // Current Bucket Processing Details
+                const currentBucketCard = document.getElementById('current_bucket_card');
+                const currentProcessingBucketName = data.current_processing_bucket_name;
+                let currentBucketDetails = null;
+
+                if (currentProcessingBucketName && data.buckets) {
+                    currentBucketDetails = data.buckets.find(b => b.name === currentProcessingBucketName);
+                }
+
+                if (currentOverallStatus === 'running' && currentProcessingBucketName && currentBucketDetails) {
+                    currentBucketCard.style.display = 'block';
+                    document.getElementById('current_bucket_name_display').textContent = currentProcessingBucketName;
+                    let objectMsg = "Last object key: " + (currentBucketDetails.last_object_key || "N/A");
+                    document.getElementById('current_bucket_object_message').textContent = objectMsg;
+                    document.getElementById('current_bucket_objects_processed_count_text').textContent = "Objects processed in this bucket: " + (currentBucketDetails.objects_processed || 0);
+                } else if (currentOverallStatus === 'running' && currentProcessingBucketName) {
+                    currentBucketCard.style.display = 'block';
+                    document.getElementById('current_bucket_name_display').textContent = currentProcessingBucketName;
+                    document.getElementById('current_bucket_object_message').textContent = "Fetching details for this bucket...";
+                    document.getElementById('current_bucket_objects_processed_count_text').textContent = "Objects processed: 0";
+                } else if (currentOverallStatus === 'running' && data.total_buckets > 0 && data.buckets_processed_count < data.total_buckets) {
+                    currentBucketCard.style.display = 'block';
+                    document.getElementById('current_bucket_name_display').textContent = "Waiting for next bucket...";
+                    document.getElementById('current_bucket_object_message').textContent = "";
+                    document.getElementById('current_bucket_objects_processed_count_text').textContent = "";
+                }
+                else {
+                    currentBucketCard.style.display = 'none';
+                }
+
+                // List of All Buckets
+                const bucketListUl = document.getElementById('bucket_status_list');
+                bucketListUl.innerHTML = ''; // Clear previous list
+                document.getElementById('total_bucket_count_list_header').textContent = (data.buckets ? data.buckets.length : 0);
+
+                if (data.buckets && data.buckets.length > 0) {
+                    data.buckets.forEach(bucket => {
+                        const li = document.createElement('li');
+                        li.className = 'list-group-item d-flex justify-content-between align-items-center';
+                        
+                        let bucketDisplayName = bucket.name;
+                        if (bucket.error) {
+                            bucketDisplayName += ` <small class="text-danger fst-italic">- Error: ${bucket.error}</small>`;
+                        } else if (bucket.status === 'completed' && bucket.objects_processed !== undefined) {
+                             bucketDisplayName += ` <small class="text-muted fst-italic">- ${bucket.objects_processed} objects</small>`;
+                        }
+
+                        li.innerHTML = bucketDisplayName;
+
+                        const badge = document.createElement('span');
+                        badge.className = 'badge rounded-pill';
+                        let badgeClass = 'bg-secondary'; // Default for pending
+                        let statusText = bucket.status || 'pending';
+
+                        if (statusText.toLowerCase() === 'processing') {
+                            badgeClass = 'bg-primary';
+                        } else if (statusText.toLowerCase() === 'completed') {
+                            badgeClass = 'bg-success';
+                        } else if (statusText.toLowerCase() === 'error') {
+                            badgeClass = 'bg-danger';
+                        }
+                        badge.classList.add(badgeClass);
+                        badge.textContent = statusText.charAt(0).toUpperCase() + statusText.slice(1);
+                        
+                        li.appendChild(badge);
+                        bucketListUl.appendChild(li);
+                    });
+                } else if (currentOverallStatus === 'running') {
+                     const li = document.createElement('li');
+                     li.className = 'list-group-item text-muted';
+                     li.textContent = 'Snapshot active, waiting for bucket list...';
+                     bucketListUl.appendChild(li);
+                } else {
+                    const li = document.createElement('li');
+                    li.className = 'list-group-item text-muted';
+                    if (currentOverallStatus === 'completed' && data.total_buckets === 0) {
+                        li.textContent = 'Snapshot completed: No buckets were processed.';
+                    } else if (currentOverallStatus === 'error') {
+                         li.textContent = 'Snapshot ended with an error before processing buckets.';
+                    }
+                    else {
+                        li.textContent = 'No snapshot active or no buckets found.';
+                    }
+                    bucketListUl.appendChild(li);
+                }
+
+                // Keep polling if snapshot is running
+                if (currentOverallStatus === 'running') {
+                    setTimeout(updateSnapshotStatusPage, 2000); // Poll every 2 seconds
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching snapshot status:', error);
+                document.getElementById('overall_status_message').textContent = 'Error fetching status. Check console.';
+                const overallProgressBar = document.getElementById('overall_progress_bar');
+                overallProgressBar.style.width = '100%';
+                overallProgressBar.textContent = 'Error';
+                overallProgressBar.classList.remove('bg-primary', 'progress-bar-animated', 'progress-bar-striped');
+                overallProgressBar.classList.add('bg-danger');
+                // Optionally, try polling again after a longer delay or stop
+                // setTimeout(updateSnapshotStatusPage, 5000); 
+            });
+    }
+
+    // Initial call
+    document.addEventListener('DOMContentLoaded', function() {
+        updateSnapshotStatusPage();
+    });
+</script>
+{% endblock %}

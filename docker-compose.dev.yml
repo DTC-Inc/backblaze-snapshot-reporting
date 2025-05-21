@@ -1,0 +1,47 @@
+version: '3.8'
+
+networks:
+  bbssr-network:
+    driver: bridge
+
+services:
+  web:
+    container_name: bbssr-web-dev
+    build: 
+      context: .    ports:
+      - "${APP_PORT:-5000}:5000"
+      - "5678:5678"  # Debugging port
+    networks:
+      - bbssr-network
+    volumes:
+      - ./app:/app/app
+      - ./scripts:/app/scripts
+      - backblaze_data:/data
+    environment:
+      - DEBUG=True
+      - FLASK_ENV=development
+      - USE_ACCURATE_BUCKET_SIZE=${USE_ACCURATE_BUCKET_SIZE:-True}
+      - USE_S3_API=${USE_S3_API:-True}
+    command: python -m flask --app app.app run --host=0.0.0.0 --port=5000 --debug
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+  cloudflared:
+    container_name: bbssr-cloudflared-dev
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles: ["with-cloudflared"]
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
+    networks:
+      - bbssr-network
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  backblaze_data:
