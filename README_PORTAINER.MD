@@ -35,9 +35,7 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
    - **Name**: `bbssr` (or your preferred stack name)
    - **Repository URL**: `https://github.com/yourusername/backblaze-snapshot-reporting.git`
    - **Repository reference**: `main` (or your desired branch/tag)
-   - **Compose path**: Add both files in this order:
-     1. `/docker-compose.yml`
-     2. `/docker-compose.local.yml`
+   - **Compose path**: `/docker-compose.local.yml`
 
 3. Add environment variables:
    - Copy variables from `stack.env.example` in the repository
@@ -49,6 +47,9 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
      PID=1000                    # User ID for file ownership (optional)
      GID=1000                    # Group ID for file ownership (optional)
      USE_POSTGRES=1             # Set to 1 if you want to use PostgreSQL
+     POSTGRES_USER=bbssr_user   # Required if USE_POSTGRES=1
+     POSTGRES_PASSWORD=secure_password  # Required if USE_POSTGRES=1
+     POSTGRES_DB=bbssr_db       # Required if USE_POSTGRES=1
      ```
 
 4. Configure volumes:
