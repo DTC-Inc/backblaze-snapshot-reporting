@@ -15,6 +15,9 @@
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <button type="submit" class="btn btn-sm btn-link text-decoration-none">Normal Snapshot</button>
                             </form>
+                            <div class="px-2 pb-1 text-muted small">
+                                Will resume from the last failed snapshot if possible.
+                            </div>
                         </li>
                         <li>
                             <form action="{{ url_for('new_snapshot') }}" method="post" id="newSnapshotFormWithCache" class="px-2 py-1">
@@ -22,6 +25,9 @@
                                 <input type="hidden" name="clear_cache" value="true">
                                 <button type="submit" class="btn btn-sm btn-link text-decoration-none">Clear Cache & Snapshot</button>
                             </form>
+                            <div class="px-2 pb-1 text-muted small">
+                                Starts completely fresh, clearing all caches.
+                            </div>
                         </li>
                     </ul>
                 </div>

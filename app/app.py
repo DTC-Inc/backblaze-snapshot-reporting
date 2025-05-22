@@ -355,6 +355,28 @@ def snapshot_worker(app_context, snapshot_type, snapshot_name, api_choice, clear
         client_instance = None 
         account_info = None 
         parallel_operations = current_app.config.get('PARALLEL_BUCKET_OPERATIONS', app_config.PARALLEL_BUCKET_OPERATIONS)
+        
+        # Resume logic - load previous failed snapshot data if this is a normal snapshot (not clearing cache)
+        previous_snapshot_progress = None
+        completed_buckets = {}
+        if not clear_cache:
+            try:
+                # Load the previous snapshot progress data
+                with snapshot_progress_lock:
+                    if not snapshot_progress_global.get("active", False):
+                        # Check if there's a previous failed snapshot
+                        previous_snapshot_progress = copy.deepcopy(snapshot_progress_global)
+                        if previous_snapshot_progress and previous_snapshot_progress.get("buckets"):
+                            # Extract successfully completed buckets
+                            for bucket in previous_snapshot_progress.get("buckets", []):
+                                if bucket.get("status") == "completed":
+                                    completed_buckets[bucket.get("bucket_name")] = True
+                            
+                            if completed_buckets:
+                                current_app.logger.info(f"Found {len(completed_buckets)} completed buckets from previous snapshot. Will skip these when resuming.")
+            except Exception as e:
+                current_app.logger.warning(f"Error loading previous snapshot progress: {e}. Will not resume.")
+                completed_buckets = {}
 
         if api_choice == 'b2':
             # Accept either stored credentials or environment variables
@@ -370,6 +392,7 @@ def snapshot_worker(app_context, snapshot_type, snapshot_name, api_choice, clear
                         "end_time": datetime.utcnow().isoformat()
                     })
                 return
+            
             try:
                 client_instance = NativeBackblazeClient(parallel_operations=parallel_operations)
                 
@@ -445,6 +468,7 @@ def snapshot_worker(app_context, snapshot_type, snapshot_name, api_choice, clear
                             "end_time": datetime.utcnow().isoformat()
                         })
                     return
+            
             try:
                 # Instantiate S3BackblazeClient with S3-specific credentials
                 client_instance = S3BackblazeClient(
@@ -492,31 +516,58 @@ def snapshot_worker(app_context, snapshot_type, snapshot_name, api_choice, clear
 
         # Store the client instance in the app context so it can be accessed for dynamic updates
         current_app.active_snapshot_client = client_instance
+        
+        # Pass the completed buckets to the client if it supports skipping them
+        if completed_buckets and hasattr(client_instance, 'set_completed_buckets'):
+            client_instance.set_completed_buckets(completed_buckets)
+            current_app.logger.info(f"Passed {len(completed_buckets)} completed buckets to the client for skipping")
 
         with snapshot_progress_lock:
-            snapshot_progress_global.clear() 
+            # Only clear the progress data if not resuming, or if clearing cache
+            if clear_cache or not previous_snapshot_progress or not completed_buckets:
+                snapshot_progress_global.clear()
+                
             snapshot_progress_global.update({
-                "active": True, "overall_percentage": 0, "status_message": "Initializing snapshot...",
-                "error_message": None, "current_snapshot_type": snapshot_type,
-                "start_time": datetime.utcnow().isoformat(), "end_time": None,
-                "total_buckets": 0, "buckets_processed_count": 0,
-                "current_processing_bucket_name": None, "buckets": [],
-                "parallel_operations": parallel_operations
+                "active": True, 
+                "overall_percentage": 0, 
+                "status_message": "Initializing snapshot..." if not completed_buckets else f"Resuming snapshot (skipping {len(completed_buckets)} completed buckets)",
+                "error_message": None, 
+                "current_snapshot_type": snapshot_type,
+                "start_time": datetime.utcnow().isoformat(), 
+                "end_time": None,
+                "total_buckets": 0, 
+                "buckets_processed_count": len(completed_buckets) if completed_buckets else 0,
+                "current_processing_bucket_name": None, 
+                "buckets": [],
+                "parallel_operations": parallel_operations,
+                "is_resumed": bool(completed_buckets)
             })
         
         try:
             current_app.logger.info(f"Calling {api_choice.upper()} client_instance.take_snapshot for '{snapshot_name}'")
-            snapshot_results = client_instance.take_snapshot(
-                snapshot_name, # positional arg
-                progress_callback=update_snapshot_detailed_progress,
-                account_info=account_info # Pass account_info (will be None for S3, used by B2)
-            )
+            
+            # Add the completed_buckets parameter if resuming
+            snapshot_params = {
+                "snapshot_name": snapshot_name,
+                "progress_callback": update_snapshot_detailed_progress,
+                "account_info": account_info
+            }
+            
+            if completed_buckets:
+                snapshot_params["completed_buckets"] = completed_buckets
+                
+            snapshot_results = client_instance.take_snapshot(**snapshot_params)
             
             if snapshot_results and isinstance(snapshot_results, dict) and 'total_storage_bytes' in snapshot_results:
                 # Add snapshot_name and api_type to the results if not already there, for db.save_snapshot
                 snapshot_results.setdefault('snapshot_name', snapshot_name)
                 snapshot_results.setdefault('api_type', api_choice)
                 snapshot_results.setdefault('account_id', account_info.get('accountId') if account_info else None)
+                
+                # Add information about resumed operation if applicable
+                if completed_buckets:
+                    snapshot_results.setdefault('resumed', True)
+                    snapshot_results.setdefault('resumed_buckets_count', len(completed_buckets))
 
                 db.save_snapshot(snapshot_results) 
                 current_app.logger.info(f"Snapshot '{snapshot_name}' data stored in database.")
@@ -535,6 +586,11 @@ def snapshot_worker(app_context, snapshot_type, snapshot_name, api_choice, clear
                 elif not snapshot_progress_global.get('buckets') and snapshot_progress_global.get('total_buckets',0) == 0 :
                      if "No buckets found" not in snapshot_progress_global.get("status_message",""):
                         final_status_message = "Snapshot completed: No buckets processed."
+                        
+                # Add resume information to the status message if applicable
+                if completed_buckets:
+                    final_status_message = f"{final_status_message} (Resumed from previous run, skipped {len(completed_buckets)} completed buckets)"
+                    
                 snapshot_progress_global["status_message"] = final_status_message
                 current_app.logger.info(f"Snapshot worker finished for '{snapshot_name}'. Final status: {final_status_message}")
 

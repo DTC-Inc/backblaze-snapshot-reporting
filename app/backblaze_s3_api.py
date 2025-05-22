@@ -440,7 +440,7 @@ class S3BackblazeClient(BackblazeClient):
         except Exception as e: # Added except block
             logger.warning(f"Could not save snapshot cache: {e}")
             
-    def take_snapshot(self, snapshot_name="S3 Snapshot", progress_callback=None, account_info=None): # Added snapshot_name, progress_callback, account_info
+    def take_snapshot(self, snapshot_name="S3 Snapshot", progress_callback=None, account_info=None, completed_buckets=None): # Added snapshot_name, progress_callback, account_info, completed_buckets
         """Take a snapshot of the current account usage and costs using S3 API.
         Args:
             snapshot_name (str): A descriptive name for this snapshot run.
@@ -448,13 +448,22 @@ class S3BackblazeClient(BackblazeClient):
                                           Expected signature: callback(event_type, data_dict)
             account_info (dict): Account information (not typically used by S3 client directly for listing,
                                  but passed for consistency with Native client if needed for other things).
+            completed_buckets (dict): Dictionary of bucket names that have already been processed and should be skipped.
         """
         logger.info(f"Starting S3 API usage snapshot: '{snapshot_name}' (Parallel Ops: {self.parallel_operations})")
         start_time = time.time()
         initial_api_calls = self.api_calls_made # Assuming parent class tracks this
         
         processed_buckets_count = 0
-        total_buckets_for_progress = 0 # Initialize for progress reporting
+        total_buckets_for_progress = 0
+        
+        # Use passed in completed_buckets or the class instance value
+        skip_buckets = completed_buckets or self.completed_buckets or {}
+        resuming = bool(skip_buckets)
+        if resuming:
+            logger.info(f"Resuming snapshot - will skip {len(skip_buckets)} already completed buckets")
+
+        # Initialize for progress reporting
         snapshot_data = {
             'snapshot_name': snapshot_name,
             'timestamp': datetime.utcnow().isoformat(),
@@ -467,7 +476,9 @@ class S3BackblazeClient(BackblazeClient):
             'total_cost': 0,         # Sum of storage and estimated API cost
             'buckets': [],
             'account_id': account_info.get('accountId') if account_info else None, # If available
-            'api_calls_made_during_snapshot': 0 # Specific to this snapshot
+            'api_calls_made_during_snapshot': 0, # Specific to this snapshot
+            'resumed': resuming,  # Indicate if this was a resumed snapshot
+            'skipped_buckets_count': len(skip_buckets) if skip_buckets else 0
         }
 
         if not self.s3_client or not self.s3_resource:
@@ -476,33 +487,63 @@ class S3BackblazeClient(BackblazeClient):
                 progress_callback("SNAPSHOT_ERROR", {"error": "S3 client not initialized", "message": "Failed to connect to S3 service."})
             return None
 
-        try:
-            # Initial progress update: SNAPSHOT_SETUP
-            # Get list of buckets first to inform total_buckets
-            s3_buckets_list = []
-            try:
-                s3_buckets_response = self.s3_client.list_buckets()
-                s3_buckets_list = [{'bucketId': b['Name'], 'bucketName': b['Name']} for b in s3_buckets_response.get('Buckets', [])] # S3 uses Name as ID for many ops
-                total_buckets_for_progress = len(s3_buckets_list)
-                logger.info(f"Found {total_buckets_for_progress} buckets via S3 API.")
-                if progress_callback:
-                    progress_callback("SNAPSHOT_SETUP", {
-                        "total_buckets": total_buckets_for_progress,
-                        "bucket_names": [b['bucketName'] for b in s3_buckets_list]
-                    })
-            except Exception as e_list_buckets:
-                logger.error(f"Failed to list S3 buckets: {e_list_buckets}", exc_info=True)
-                if progress_callback:
-                    progress_callback("SNAPSHOT_ERROR", {"error": "Failed to list S3 buckets", "message": str(e_list_buckets)})
-                return None
-            
-            if total_buckets_for_progress == 0:
-                logger.info("No S3 buckets found to process.")
-                # Still report completion, even if no buckets
-                if progress_callback:
-                     progress_callback("BUCKET_COMPLETE", {"bucket_name": "N/A", "message": "No buckets found."}) # Generic completion for overall
-                # Fall through to finalize and return empty snapshot structure
+        # First try to load a previous snapshot for reference data (especially download stats)
+        prev_snapshot = self._load_cached_snapshot()
 
+        # Get list of buckets from S3 API directly
+        try:
+            # Get buckets using S3 API
+            buckets_response = self.s3_client.list_buckets()
+            buckets = buckets_response.get('Buckets', [])
+            
+            # Convert S3 bucket format to our unified format for processing
+            s3_buckets_list = []
+            for bucket in buckets:
+                s3_buckets_list.append({
+                    'name': bucket.get('Name', 'unknown_bucket'),
+                    'creationDate': bucket.get('CreationDate'),
+                    'bucketType': 'allPrivate',  # Assuming private type like B2 native
+                    'bucketId': bucket.get('Name', 'unknown_id') # Use name as ID for S3 buckets
+                })
+                
+            logger.info(f"Found {len(s3_buckets_list)} buckets via S3 API.")
+            total_buckets_for_progress = len(s3_buckets_list)
+            
+            # If resuming, update the count of buckets to process
+            buckets_to_actually_process = []
+            if resuming:
+                # Filter out already completed buckets
+                for bucket in s3_buckets_list:
+                    bucket_name = bucket.get('name')
+                    if bucket_name in skip_buckets:
+                        logger.info(f"Skipping already completed bucket: {bucket_name}")
+                        processed_buckets_count += 1
+                    else:
+                        buckets_to_actually_process.append(bucket)
+                        
+                logger.info(f"After filtering: {len(buckets_to_actually_process)} buckets to process, {processed_buckets_count} buckets to skip")
+            else:
+                buckets_to_actually_process = s3_buckets_list
+                
+            if progress_callback:
+                progress_callback("SNAPSHOT_SETUP", {
+                    "total_buckets": total_buckets_for_progress,
+                    "bucket_names": [b.get('name') for b in s3_buckets_list],
+                    "buckets_to_skip": list(skip_buckets.keys()) if skip_buckets else [],
+                    "resuming": resuming
+                })
+            
+            # If resuming and we have previous snapshot data, import completed bucket data
+            if resuming and prev_snapshot:
+                for prev_bucket in prev_snapshot.get('buckets', []):
+                    bucket_name = prev_bucket.get('name')
+                    if bucket_name in skip_buckets:
+                        logger.info(f"Importing data for previously completed bucket: {bucket_name}")
+                        snapshot_data['buckets'].append(prev_bucket)
+                        snapshot_data['total_storage_bytes'] += prev_bucket.get('storage_bytes', 0)
+                        snapshot_data['total_storage_cost'] += prev_bucket.get('storage_cost', 0)
+                        # Download data is typically placeholders for S3, not summed here unless changed
+            
             # Helper function to process a single S3 bucket
             def process_s3_bucket(bucket_info):
                 """Process a single bucket to get its stats (called by ThreadPoolExecutor)"""
@@ -524,66 +565,71 @@ class S3BackblazeClient(BackblazeClient):
                     })
                 
                 try:
-                    # Use the enhanced S3 bucket usage method that directly uses boto3
+                    # Get bucket stats using S3 API via our helper method
                     bucket_stats = self.get_s3_bucket_usage(bucket_name, progress_callback=progress_callback)
                     
                     if not bucket_stats:
-                        logger.warning(f"Could not get S3 stats for bucket {bucket_name}, skipping")
+                        logger.error(f"Failed to get S3 stats for bucket {bucket_name}")
                         if progress_callback:
                             progress_callback("BUCKET_ERROR", {
-                                "bucket_name": bucket_name, 
+                                "bucket_name": bucket_name,
                                 "error": "Failed to get S3 bucket statistics"
                             })
                         return None
                     
-                    # Extract and calculate costs
+                    # Storage cost is calculated from size
                     storage_bytes = bucket_stats.get('total_size', 0)
                     storage_gb = storage_bytes / (1024 * 1024 * 1024)
                     storage_cost = storage_gb * self.STORAGE_COST_PER_GB
                     
-                    # Get download stats from previous snapshot if available
+                    # For download stats from S3, we either don't have them or would need to estimate
+                    # So we use placeholder values or previous snapshot value if available
                     download_bytes = 0
                     if prev_snapshot:
+                        # Try to find this bucket in the previous snapshot
                         for prev_bucket in prev_snapshot.get('buckets', []):
                             if prev_bucket.get('name') == bucket_name:
                                 download_bytes = prev_bucket.get('download_bytes', 0)
                                 break
                     
-                    download_gb = download_bytes / (1024 * 1024 * 1024)
+                    download_gb = max(0, download_bytes / (1024 * 1024 * 1024))
                     download_cost = max(0, download_gb * self.DOWNLOAD_COST_PER_GB)
                     
-                    # Total cost for this bucket
-                    bucket_total_cost = storage_cost + download_cost
+                    # Calculate total cost for this bucket
+                    total_cost = storage_cost + download_cost
                     
-                    # Create the bucket info object for the snapshot
-                    bucket_result = {
+                    # Create bucket info in standardized format
+                    bucket_info = {
                         'name': bucket_name,
-                        'id': bucket_id or bucket_name,  # Use name as ID if no ID provided
+                        'id': bucket_id or bucket_name,  # Use name as ID if no ID
                         'storage_bytes': storage_bytes,
                         'storage_cost': storage_cost,
                         'download_bytes': download_bytes,
                         'download_cost': download_cost,
-                        'api_calls': 0,  # Not tracked in same way for S3
-                        'api_cost': 0,   # Not tracked in same way for S3
-                        'total_cost': bucket_total_cost,
+                        'api_calls': 0,  # We don't track this individually per bucket for S3
+                        'api_cost': 0,   # We don't track this individually per bucket for S3
+                        'total_cost': total_cost,
                         'files_count': bucket_stats.get('files_count', 0),
-                        'reporting_method': bucket_stats.get('source', 's3_api'),
+                        'reporting_method': 's3_api',
                         'largest_files': bucket_stats.get('largest_files', []),
-                        'pagination_pages': bucket_stats.get('pagination_pages', 0)
                     }
+                    
+                    # Update our tracking of completed buckets for potential future resume
+                    self.completed_buckets[bucket_name] = True
                     
                     # Report completion
                     if progress_callback:
+                        objects_processed = bucket_stats.get('files_count', 0)
                         progress_callback("BUCKET_COMPLETE", {
                             "bucket_name": bucket_name,
-                            "objects_processed_in_bucket": bucket_stats.get('files_count', 0),
+                            "objects_processed_in_bucket": objects_processed,
                             "pagination_info": {
-                                "total_pages": bucket_stats.get('pagination_pages', 0),
-                                "files_processed": bucket_stats.get('files_count', 0)
+                                "total_pages": bucket_stats.get('pagination_pages', 0) if hasattr(bucket_stats, 'pagination_pages') else 0,
+                                "files_processed": objects_processed
                             }
                         })
                     
-                    return bucket_result
+                    return bucket_info
                     
                 except Exception as e:
                     logger.error(f"Error processing S3 bucket {bucket_name}: {str(e)}", exc_info=True)
@@ -591,65 +637,53 @@ class S3BackblazeClient(BackblazeClient):
                         progress_callback("BUCKET_ERROR", {"bucket_name": bucket_name, "error": str(e)})
                     return None
 
-            # Use ThreadPoolExecutor for parallel processing
-            bucket_data_results = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_operations) as executor:
-                future_to_bucket_info = {executor.submit(process_s3_bucket, b_info): b_info for b_info in s3_buckets_list}
+            # Use ThreadPoolExecutor for parallel processing of buckets that need to be processed
+            if buckets_to_actually_process:  # Only process if there are buckets left to process
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_operations) as executor:
+                    future_to_bucket_info = {executor.submit(process_s3_bucket, b_info): b_info for b_info in buckets_to_actually_process}
+                    
+                    for future in concurrent.futures.as_completed(future_to_bucket_info):
+                        bucket_info_for_future = future_to_bucket_info[future]
+                        try:
+                            data = future.result()
+                            if data: # If None, it means an error occurred and was handled in process_s3_bucket
+                                snapshot_data['buckets'].append(data)
+                                snapshot_data['total_storage_bytes'] += data['storage_bytes']
+                                snapshot_data['total_storage_cost'] += data['storage_cost']
+                                # Download bytes/cost are placeholders for S3, not summed here unless changed
+                        except Exception as exc:
+                            logger.error(f'S3 Bucket {bucket_info_for_future["name"]} generated an exception during future processing: {exc}', exc_info=True)
+                            if progress_callback:
+                                progress_callback("BUCKET_ERROR", {"bucket_name": bucket_info_for_future["name"], "error": str(exc)})
                 
-                for future in concurrent.futures.as_completed(future_to_bucket_info):
-                    bucket_info_for_future = future_to_bucket_info[future]
-                    try:
-                        data = future.result()
-                        if data: # If None, it means an error occurred and was handled in process_s3_bucket
-                            bucket_data_results.append(data)
-                            snapshot_data['total_storage_bytes'] += data['storage_bytes']
-                            snapshot_data['total_storage_cost'] += data['storage_cost']
-                            # Download bytes/cost are placeholders for S3, not summed here unless changed
-                    except Exception as exc:
-                        logger.error(f'S3 Bucket {bucket_info_for_future["bucketName"]} generated an exception during future processing: {exc}', exc_info=True)
-                        if progress_callback:
-                            progress_callback("BUCKET_ERROR", {"bucket_name": bucket_info_for_future["bucketName"], "error": str(exc)})
-                    # processed_buckets_count is implicitly handled by BUCKET_COMPLETE/ERROR callbacks from within process_s3_bucket
-
-            snapshot_data['buckets'] = bucket_data_results
+            # Calculate download costs and other aggregate values to complete snapshot
+            total_download_bytes = sum(bucket.get('download_bytes', 0) for bucket in snapshot_data['buckets'])
+            total_download_gb = total_download_bytes / (1024 * 1024 * 1024)
+            total_download_cost = max(0, total_download_gb * self.DOWNLOAD_COST_PER_GB)
+            snapshot_data['total_download_bytes'] = total_download_bytes
+            snapshot_data['total_download_cost'] = total_download_cost
             
-            # API calls for S3 are harder to track precisely like B2's b2_authorize_account etc.
-            # Boto3 might make multiple underlying HTTP calls.
-            # For now, estimate or leave as a rough count if parent class tracks general HTTP.
-            # Let's assume parent's self.api_calls_made is a general counter.
-            snapshot_api_calls = self.api_calls_made - initial_api_calls
-            snapshot_data['api_calls_made_during_snapshot'] = snapshot_api_calls
-            snapshot_data['total_api_calls'] = snapshot_api_calls # Or a more S3-specific estimate
-
-            # Estimate API cost (very rough for S3 without detailed call types)
-            # Using a generic cost per 1000 calls, similar to B2 example
-            generic_s3_call_cost_per_1000 = getattr(self, 'S3_CALL_COST_PER_1000', 0.004) # Example value
-            estimated_api_cost = (snapshot_api_calls * generic_s3_call_cost_per_1000) / 1000
-            snapshot_data['total_api_cost'] = estimated_api_cost # Add if you have this field
+            # API calls/cost must be estimate for S3 since we don't track it directly
+            # In practice this is part of the S3 service cost already
+            api_calls_for_snapshot = self.api_calls_made - initial_api_calls
+            snapshot_data['total_api_calls'] = api_calls_for_snapshot
+            snapshot_data['api_calls_made_during_snapshot'] = api_calls_for_snapshot
+            estimated_api_cost = 0  # Typically zero as API calls are included in S3 service
+            snapshot_data['total_api_cost'] = estimated_api_cost
             
-            snapshot_data['total_cost'] = snapshot_data['total_storage_cost'] + snapshot_data.get('total_download_cost',0) + estimated_api_cost
+            # Total cost is sum of storage, download, and API costs
+            snapshot_data['total_cost'] = snapshot_data['total_storage_cost'] + snapshot_data['total_download_cost'] + snapshot_data['total_api_cost']
             
-            # self._save_cached_snapshot(snapshot_data) # If S3 snapshots also use this generic cache
-
+            # Save the snapshot to cache
+            self._save_cached_snapshot(snapshot_data)
+            
             elapsed = time.time() - start_time
-            logger.info(f"S3 Snapshot '{snapshot_name}' completed in {elapsed:.2f}s. Total Storage: {snapshot_data['total_storage_bytes']} bytes. API Calls (estimated): {snapshot_api_calls}")
+            logger.info(f"S3 API Snapshot completed in {elapsed:.2f}s with {api_calls_for_snapshot} API calls")
             
-            # Final progress update for completion
-            if progress_callback:
-                progress_callback("SNAPSHOT_COMPLETE", {
-                    "message": "S3 Snapshot process completed.",
-                    "total_storage_bytes": snapshot_data['total_storage_bytes'],
-                    "total_cost": snapshot_data['total_cost'],
-                    "duration_seconds": elapsed
-                })
-
             return snapshot_data
             
         except Exception as e:
-            logger.error(f"Error taking S3 snapshot '{snapshot_name}': {str(e)}", exc_info=True)
+            logger.error(f"S3 API snapshot error: {str(e)}", exc_info=True)
             if progress_callback:
-                progress_callback("SNAPSHOT_ERROR", {
-                    "error": f"General error during S3 snapshot: {str(e)}",
-                    "message": str(e)
-                })
+                progress_callback("SNAPSHOT_ERROR", {"error": str(e)})
             return None

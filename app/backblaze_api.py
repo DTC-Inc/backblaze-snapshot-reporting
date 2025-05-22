@@ -59,10 +59,22 @@ class BackblazeClient:
         # Store parallel_operations, defaulting to value from config
         self.parallel_operations = parallel_operations if parallel_operations is not None else PARALLEL_BUCKET_OPERATIONS
         
+        # Tracking for completed buckets (for resumable snapshots)
+        self.completed_buckets = {}
+        
         # Check for cached auth data first
         if not self._load_cached_auth():            # If no cache or expired, authorize
             self.authorize()
             
+    def set_completed_buckets(self, completed_buckets):
+        """Set the list of already completed buckets that can be skipped during a resumed snapshot"""
+        if not isinstance(completed_buckets, dict):
+            logger.warning("completed_buckets must be a dictionary. Ignoring invalid format.")
+            return
+            
+        self.completed_buckets = completed_buckets
+        logger.info(f"Set {len(self.completed_buckets)} completed buckets for resumable snapshot")
+
     def clear_auth_cache(self):
         """Remove the authentication cache file to force re-authorization with new credentials"""
         cache_file = os.path.join(self.snapshot_cache_dir, 'auth_cache.json')
@@ -580,8 +592,15 @@ class BackblazeClient:
                 progress_callback("BUCKET_ERROR", {"bucket_name": bucket_name, "error": str(e)})
             return None # Or raise to be caught by the main snapshot loop
 
-    def take_snapshot(self, snapshot_name_unused, progress_callback=None, account_info=None): # Added snapshot_name_unused and account_info
-        """Take a snapshot of the current account usage and costs with optimized data collection"""
+    def take_snapshot(self, snapshot_name_unused, progress_callback=None, account_info=None, completed_buckets=None): # Added completed_buckets parameter
+        """Take a snapshot of the current account usage and costs with optimized data collection
+        
+        Args:
+            snapshot_name_unused: A name for the snapshot (used for display purposes)
+            progress_callback: Optional callback function for progress reporting
+            account_info: Optional account information to avoid re-fetching
+            completed_buckets: Optional dictionary of already completed buckets to skip (for resuming)
+        """
         logger.info(f"Starting Backblaze usage snapshot (B2 API, Parallel Ops: {self.parallel_operations})")
         start_time = time.time()
         initial_api_calls = self.api_calls_made
@@ -589,6 +608,12 @@ class BackblazeClient:
         processed_buckets_count = 0
         total_buckets_to_process = 0
         bucket_data_results = []
+        
+        # Use passed in completed_buckets or the class instance value
+        skip_buckets = completed_buckets or self.completed_buckets or {}
+        resuming = bool(skip_buckets)
+        if resuming:
+            logger.info(f"Resuming snapshot - will skip {len(skip_buckets)} already completed buckets")
 
         try:
             prev_snapshot = self._load_cached_snapshot()
@@ -611,10 +636,28 @@ class BackblazeClient:
 
             total_buckets_to_process = len(buckets)
             
+            # If resuming, update the count of buckets to process
+            buckets_to_actually_process = []
+            if resuming:
+                # Filter out already completed buckets
+                for bucket in buckets:
+                    bucket_name = bucket.get('bucketName')
+                    if bucket_name in skip_buckets:
+                        logger.info(f"Skipping already completed bucket: {bucket_name}")
+                        processed_buckets_count += 1
+                    else:
+                        buckets_to_actually_process.append(bucket)
+                        
+                logger.info(f"After filtering: {len(buckets_to_actually_process)} buckets to process, {processed_buckets_count} buckets to skip")
+            else:
+                buckets_to_actually_process = buckets
+            
             if progress_callback:
                 progress_callback("SNAPSHOT_SETUP", {
                     "total_buckets": total_buckets_to_process,
-                    "bucket_names": [b.get('bucketName') for b in buckets]
+                    "bucket_names": [b.get('bucketName') for b in buckets],
+                    "buckets_to_skip": list(skip_buckets.keys()) if skip_buckets else [],
+                    "resuming": resuming
                 })
 
             if total_buckets_to_process == 0:
@@ -623,16 +666,27 @@ class BackblazeClient:
                 # The SNAPSHOT_SETUP callback has already informed the progress system.
                 # The final snapshot structure will be empty of bucket data.
 
-
             total_storage_bytes = 0
             total_storage_cost = 0
             total_download_bytes = 0
             total_download_cost = 0
             
-            if total_buckets_to_process > 0: # Only run executor if there are buckets
+            # If resuming and we have previous snapshot data, import completed bucket data
+            if resuming and prev_snapshot:
+                for prev_bucket in prev_snapshot.get('buckets', []):
+                    bucket_name = prev_bucket.get('name')
+                    if bucket_name in skip_buckets:
+                        logger.info(f"Importing data for previously completed bucket: {bucket_name}")
+                        bucket_data_results.append(prev_bucket)
+                        total_storage_bytes += prev_bucket.get('storage_bytes', 0)
+                        total_storage_cost += prev_bucket.get('storage_cost', 0)
+                        total_download_bytes += prev_bucket.get('download_bytes', 0)
+                        total_download_cost += prev_bucket.get('download_cost', 0)
+            
+            if buckets_to_actually_process: # Only run executor if there are buckets left to process
                 with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_operations) as executor:
                     future_to_bucket_info = {}
-                    for bucket in buckets:
+                    for bucket in buckets_to_actually_process:
                         # Pass progress_callback and account_info (if needed by helper, though not directly used by B2's _process_bucket_for_snapshot)
                         future = executor.submit(self._process_bucket_for_snapshot, bucket, prev_snapshot, progress_callback, account_info)
                         future_to_bucket_info[future] = bucket.get('bucketName')
@@ -647,6 +701,8 @@ class BackblazeClient:
                                 total_storage_cost += bucket_info_result['storage_cost']
                                 total_download_bytes += bucket_info_result['download_bytes']
                                 total_download_cost += bucket_info_result['download_cost']
+                                # Update our tracking of completed buckets for potential future resume
+                                self.completed_buckets[bucket_name] = True
                             # Progress for BUCKET_COMPLETE or BUCKET_ERROR is handled within _process_bucket_for_snapshot
                         except Exception as exc:
                             logger.error(f'Bucket {bucket_name} generated an exception in B2 API snapshot main loop: {exc}', exc_info=True)
@@ -668,7 +724,9 @@ class BackblazeClient:
                 'total_cost': total_storage_cost + total_download_cost + estimated_api_cost, 
                 'buckets': bucket_data_results,
                 'api_calls_made': api_calls_for_snapshot,
-                'snapshot_type': 'b2_native' # Add type
+                'snapshot_type': 'b2_native', # Add type
+                'resumed': resuming,  # Indicate if this was a resumed snapshot
+                'skipped_buckets_count': len(skip_buckets) if skip_buckets else 0
             }
             
             self._save_cached_snapshot(snapshot)
