@@ -35,14 +35,17 @@ services:
       start_period: 40s
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
     container_name: ${STACK_NAME:-bbssr}_cloudflared
-    restart: unless-stopped
-    command: tunnel run
+    image: cloudflare/cloudflared:latest
+    entrypoint: ["cloudflared", "--no-autoupdate"]
+    command: ["tunnel", "run"]
     env_file:
       - stack.env
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     networks:
       - app_network
+    restart: always
     depends_on:
       web:
         condition: service_healthy

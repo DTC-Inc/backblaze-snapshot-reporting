@@ -30,17 +30,9 @@ services:
       start_period: 40s
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: ${STACK_NAME:-bbssr}_cloudflared
-    restart: unless-stopped
-    command: tunnel run
-    env_file:
-      - stack.env
-    networks:
-      - app_network
-    depends_on:
-      web:
-        condition: service_healthy
+    extends:
+      file: docker-compose.yml
+      service: cloudflared
 
 networks:
   app_network:

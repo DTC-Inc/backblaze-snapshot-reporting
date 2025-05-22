@@ -46,6 +46,9 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
      B2_APPLICATION_KEY=your_application_key
      PID=1000                    # User ID for file ownership (optional)
      GID=1000                    # Group ID for file ownership (optional)
+
+     # If using Cloudflare Tunnel:
+     CLOUDFLARE_TUNNEL_TOKEN=your_tunnel_token
      ```
 
 4. Configure volumes:
@@ -72,6 +75,8 @@ The stack includes the following services:
 - The database file is stored in the bbssr_data volume
 - PostgreSQL support is completely disabled
 - All data is persisted in the bbssr_data volume
+- Cloudflare tunnel requires a valid tunnel token to be set
+- If not using Cloudflare tunnel, you can remove the cloudflared service from the compose file
 
 ## Updating the Stack
 
