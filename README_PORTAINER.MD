@@ -35,7 +35,9 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
    - **Name**: `bbssr` (or your preferred stack name)
    - **Repository URL**: `https://github.com/yourusername/backblaze-snapshot-reporting.git`
    - **Repository reference**: `main` (or your desired branch/tag)
-   - **Compose path**: `/docker-compose.yml`
+   - **Compose path**: Add both files in this order:
+     1. `/docker-compose.yml`
+     2. `/docker-compose.local.yml`
 
 3. Add environment variables:
    - Copy variables from `stack.env.example` in the repository
@@ -46,18 +48,28 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
      B2_APPLICATION_KEY=your_application_key
      PID=1000                    # User ID for file ownership (optional)
      GID=1000                    # Group ID for file ownership (optional)
+     USE_POSTGRES=1             # Set to 1 if you want to use PostgreSQL
      ```
 
 4. Configure volumes:
-   - Create two volumes in Portainer:
+   - The following volumes will be created automatically:
      - `bbssr_data`: For application data
      - `bbssr_db`: For PostgreSQL data (if using PostgreSQL)
-   - The volumes will be created automatically if they don't exist
    - Permissions will be set automatically by the setup service
+   - No manual volume creation is needed
 
 5. Deploy the stack:
    - Click **Deploy the stack**
-   - Portainer will pull the repository, use the compose file, and deploy the services
+   - The setup service will run first to prepare volumes
+   - Then all other services will start automatically
+
+## Service Architecture
+
+The stack includes the following services:
+1. `web`: The main application service
+2. `postgres`: Database service (if USE_POSTGRES=1)
+3. `cloudflared`: Cloudflare tunnel service (if configured)
+4. `setup`: Initializes volumes and permissions
 
 ## Updating the Stack
 

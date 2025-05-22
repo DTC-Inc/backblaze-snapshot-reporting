@@ -10,6 +10,21 @@ services:
       - bbssr_data:/data/bbssr_data
       - bbssr_db:/data/bbssr_db
 
+  web:
+    extends:
+      file: docker-compose.yml
+      service: web
+
+  postgres:
+    extends:
+      file: docker-compose.yml
+      service: postgres
+
+  cloudflared:
+    extends:
+      file: docker-compose.yml
+      service: cloudflared
+
 volumes:
   bbssr_data:
     name: bbssr_data
