@@ -1,5 +1,12 @@
 version: '3.8'
 
+# Create directories if they don't exist
+x-directory-setup: &directory-setup
+  driver_opts:
+    type: none
+    o: bind
+    device: ${DATA_PATH:-./data}
+
 volumes:
   bbssr_data:
     driver: local
@@ -12,4 +19,14 @@ volumes:
     driver_opts:
       type: none
       o: bind
-      device: ${DATA_PATH:-./data}/bbssr_db 
+      device: ${DATA_PATH:-./data}/bbssr_db
+
+# Add a setup service to ensure directories exist
+services:
+  setup:
+    image: alpine
+    command: >
+      sh -c "mkdir -p ${DATA_PATH:-./data}/bbssr_data ${DATA_PATH:-./data}/bbssr_db && 
+             chown -R ${PID:-1000}:${GID:-1000} ${DATA_PATH:-./data}"
+    volumes:
+      - ${DATA_PATH:-./data}:${DATA_PATH:-./data} 

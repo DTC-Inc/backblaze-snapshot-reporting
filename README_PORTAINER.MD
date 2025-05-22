@@ -2,6 +2,18 @@
 
 This guide explains how to deploy the Backblaze Snapshot Reporting application using Portainer.
 
+## Prerequisites
+
+1. Create required directories on the host:
+   ```bash
+   # Create base directory (adjust path as needed)
+   mkdir -p /path/to/data/bbssr_data
+   mkdir -p /path/to/data/bbssr_db
+   
+   # Set permissions (use appropriate UID/GID)
+   chown -R 1000:1000 /path/to/data
+   ```
+
 ## Building the Image
 
 1. In Portainer, navigate to **Images** → **Build Image**
@@ -32,13 +44,23 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
      STACK_NAME=bbssr
      B2_APPLICATION_KEY_ID=your_key_id
      B2_APPLICATION_KEY=your_application_key
+     DATA_PATH=/path/to/data     # Path to your data directory
+     PID=1000                    # User ID for file ownership
+     GID=1000                    # Group ID for file ownership
      ```
 
-4. Configure volumes:
+4. Configure storage:
+   Option 1 - Docker Volumes (Recommended for Production):
    - Create two volumes in Portainer:
      - `bbssr_data`: For application data
      - `bbssr_db`: For PostgreSQL data (if using PostgreSQL)
    - In the stack deployment, check "Use external volumes"
+   - Use docker-compose.yml and docker-compose.external.yml
+
+   Option 2 - Bind Mounts (For Development/Local Setup):
+   - Ensure the directories exist on the host (see Prerequisites)
+   - Set DATA_PATH in your environment variables
+   - Use docker-compose.yml and docker-compose.local.yml
 
 5. Deploy the stack:
    - Click **Deploy the stack**
