@@ -7,9 +7,3 @@ volumes:
   bbssr_db:
     name: ${POSTGRES_VOLUME_NAME:-bbssr_db}
     external: true
-
-services:
-  cloudflared:
-    extends:
-      file: docker-compose.yml
-      service: cloudflared 
