@@ -33,7 +33,7 @@ ENV PYTHONPATH=/app:${PYTHONPATH}
 ENV PATH=/home/appuser/.local/bin:${PATH}
 
 # Create entry point script
-COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
+COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh && \
     chown -R appuser:appuser /app /data /docker-entrypoint.sh
 
