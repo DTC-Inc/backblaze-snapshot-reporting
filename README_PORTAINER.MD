@@ -35,7 +35,7 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
    - **Name**: `bbssr` (or your preferred stack name)
    - **Repository URL**: `https://github.com/yourusername/backblaze-snapshot-reporting.git`
    - **Repository reference**: `main` (or your desired branch/tag)
-   - **Compose path**: `/docker-compose.local.yml`
+   - **Compose path**: `/docker-compose.portainer.yml`
 
 3. Add environment variables:
    - Copy variables from `stack.env.example` in the repository
@@ -50,7 +50,7 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
 
 4. Configure volumes:
    - The following volume will be created automatically:
-     - `bbssr_data`: For application data
+     - `bbssr_data`: For application data and SQLite database
    - Permissions will be set automatically by the setup service
    - No manual volume creation is needed
 
@@ -62,9 +62,16 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
 ## Service Architecture
 
 The stack includes the following services:
-1. `web`: The main application service (SQLite database)
+1. `web`: The main application service with SQLite database
 2. `cloudflared`: Cloudflare tunnel service (if configured)
 3. `setup`: Initializes volumes and permissions
+
+## Important Notes
+
+- This deployment uses SQLite as the database
+- The database file is stored in the bbssr_data volume
+- PostgreSQL support is completely disabled
+- All data is persisted in the bbssr_data volume
 
 ## Updating the Stack
 
