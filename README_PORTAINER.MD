@@ -44,23 +44,16 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
      STACK_NAME=bbssr
      B2_APPLICATION_KEY_ID=your_key_id
      B2_APPLICATION_KEY=your_application_key
-     DATA_PATH=/path/to/data     # Path to your data directory
-     PID=1000                    # User ID for file ownership
-     GID=1000                    # Group ID for file ownership
+     PID=1000                    # User ID for file ownership (optional)
+     GID=1000                    # Group ID for file ownership (optional)
      ```
 
-4. Configure storage:
-   Option 1 - Docker Volumes (Recommended for Production):
+4. Configure volumes:
    - Create two volumes in Portainer:
      - `bbssr_data`: For application data
      - `bbssr_db`: For PostgreSQL data (if using PostgreSQL)
-   - In the stack deployment, check "Use external volumes"
-   - Use docker-compose.yml and docker-compose.external.yml
-
-   Option 2 - Bind Mounts (For Development/Local Setup):
-   - Ensure the directories exist on the host (see Prerequisites)
-   - Set DATA_PATH in your environment variables
-   - Use docker-compose.yml and docker-compose.local.yml
+   - The volumes will be created automatically if they don't exist
+   - Permissions will be set automatically by the setup service
 
 5. Deploy the stack:
    - Click **Deploy the stack**
