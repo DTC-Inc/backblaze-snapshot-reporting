@@ -13,9 +13,10 @@ A Python web application that monitors Backblaze B2 usage and costs, helping you
 - Dockerized for easy deployment
 - Efficient API usage to minimize Backblaze charges
 - Data caching to reduce API calls
-- SQLite database for snapshot history
+- SQLite or PostgreSQL database for snapshot history
+- Real-time progress updates via WebSockets
 
-## Getting Started
+## Deployment Options
 
 ### Prerequisites
 
@@ -23,56 +24,148 @@ A Python web application that monitors Backblaze B2 usage and costs, helping you
 - Backblaze B2 account with API credentials
 - SMTP server access (if using email notifications)
 
-### Configuration
+### Quick Start
 
-1. Create a `.env` file in the project root:
+1. Clone this repository:
+   ```
+   git clone https://github.com/your-username/backblaze-snapshot-reporting.git
+   cd backblaze-snapshot-reporting
+   ```
 
+2. Create your environment file:
+   ```
+   cp stack.env.example stack.env
+   ```
+
+3. Edit the `stack.env` file and add your Backblaze B2 API credentials:
+   ```
+   # Required
+   B2_APPLICATION_KEY_ID=your_key_id
+   B2_APPLICATION_KEY=your_application_key
+   
+   # Optional: Change the default stack name if desired
+   STACK_NAME=bbssr
+   ```
+
+4. Start the services:
+   ```
+   docker compose up -d
+   ```
+
+   For production with external volumes:
+   ```
+   docker compose -f docker-compose.yml -f docker-compose.external.yml up -d
+   ```
+
+   For local development:
+   ```
+   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+   ```
+
+5. Access the application at http://localhost:5000 (or the port you configured)
+
+### Storage Configuration Options
+
+The application supports three deployment options:
+
+#### 1. Docker Volumes (Default for Development)
+
+By default, the application uses Docker local volumes for data storage. This is recommended for development.
+
+In your `stack.env` file:
 ```
-B2_APPLICATION_KEY_ID=your_key_id_here
-B2_APPLICATION_KEY=your_application_key_here
-SNAPSHOT_INTERVAL_HOURS=24
-COST_CHANGE_THRESHOLD=10.0
-SECRET_KEY=your_secret_key_here
-
-# Email notifications (optional)
-EMAIL_ENABLED=True
-EMAIL_SENDER=your_email@example.com
-EMAIL_RECIPIENTS=recipient1@example.com,recipient2@example.com
-EMAIL_SERVER=smtp.example.com
-EMAIL_PORT=587
-EMAIL_USERNAME=your_username
-EMAIL_PASSWORD=your_password
-EMAIL_USE_TLS=True
+USE_DOCKER_VOLUMES=true
+DATA_VOLUME_NAME=bbssr_backblaze_data  # Optional, defaults to ${STACK_NAME}_backblaze_data
 ```
 
-### Installation and Running
-
-1. Build and start the service:
-
-```bash
-docker-compose up -d
+Start the application with:
+```
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
 ```
 
-2. Access the web interface:
-   - Open http://localhost:5000 in your browser (or the port specified in your .env file)
+#### 2. External Volumes (Recommended for Production)
+
+For production deployments, it's recommended to use external volumes that you create and manage separately:
+
+1. Create the external volume:
+   ```
+   docker volume create bbssr_backblaze_data
+   ```
+
+2. Start the application using the external volume configuration:
+   ```
+   docker compose -f docker-compose.yml -f docker-compose.external.yml up -d
+   ```
+
+This ensures your data persists even if you remove the stack.
+
+#### 3. Local Storage Paths
+
+If you prefer to use local filesystem paths instead of Docker volumes:
+
+1. In your `stack.env` file:
+   ```
+   USE_DOCKER_VOLUMES=false
+   DATA_BASE_PATH=/path/to/your/data
+   ```
+
+2. Start the application using the local storage override:
+   ```
+   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+   ```
+
+### Database Options
+
+#### SQLite (Default)
+
+By default, the application uses SQLite, which is simple and requires no additional configuration.
+
+#### PostgreSQL
+
+To use PostgreSQL instead of SQLite:
+
+1. Set `USE_POSTGRES=true` in your `stack.env` file
+2. Configure the PostgreSQL settings:
+   ```
+   USE_POSTGRES=true
+   POSTGRES_USER=bbssr_user
+   POSTGRES_PASSWORD=secure_password_here
+   POSTGRES_DB=bbssr_db
+   ```
+
+If you're using external volumes for production, also create the PostgreSQL volume:
+```
+docker volume create bbssr_postgres_data
+```
+
+### Deploying with Portainer
+
+The docker-compose configuration is compatible with Portainer. To deploy:
+
+1. In Portainer, go to Stacks → Add stack
+2. Upload the docker-compose.yml file or paste its contents
+3. Set your environment variables:
+   - For SQLite (default): Set `STACK_NAME=bbssr` and other required variables
+   - For PostgreSQL: Add `USE_POSTGRES=1` to enable the PostgreSQL service
+4. Deploy the stack
+
+For persistent volumes in Portainer:
+1. First create the volume(s) in Portainer's Volumes section
+2. Make sure to name them exactly as configured (e.g., bbssr_backblaze_data)
+3. In the advanced deployment options in Portainer, check "External volumes" 
 
 ### Cloudflare Tunnel Integration (Optional)
 
 For secure remote access without exposing ports:
 
-1. Add your Cloudflare Tunnel token to the `.env` file:
+1. Add your Cloudflare Tunnel token to the `stack.env` file:
 ```
 CLOUDFLARE_TUNNEL_TOKEN=your_tunnel_token_here
 ```
 
-2. Start the application with Cloudflared:
-```bash
-docker-compose --profile with-cloudflared up -d
-```
+2. Cloudflared service is included in the standard docker-compose.yml file
 
-See [Cloudflare Tunnel Documentation](docs/CLOUDFLARE_TUNNEL.md) for detailed setup instructions.
-
-## Usage
+## Application Usage
 
 - Dashboard shows latest snapshot and cost trends
 - Significant cost changes are highlighted
@@ -97,7 +190,7 @@ You can also take manual snapshots at any time from the dashboard or snapshots p
 
 The application includes improved bucket size reporting that provides more accurate storage usage information:
 
-1. **Enable accurate bucket size calculation** by setting in your `.env` file:
+1. **Enable accurate bucket size calculation** by setting in your `stack.env` file:
    ```
    USE_ACCURATE_BUCKET_SIZE=True
    ```
@@ -107,80 +200,92 @@ The application includes improved bucket size reporting that provides more accur
    - More accurately calculate storage costs
    - Comprehensive reporting that accounts for all file versions
 
-3. **Performance considerations:**
-   - More accurate reporting may require more API calls to Backblaze B2
-   - For extremely large buckets, calculation may take longer
-   - Results are cached according to your `BUCKET_STATS_CACHE_HOURS` setting
-
-For more details, see [Accurate Bucket Size Reporting](docs/ACCURATE_BUCKET_SIZE_REPORTING.md).
-
 ### S3 API Integration
 
 For even more accurate bucket size reporting, the application can use Backblaze B2's S3-compatible API:
 
-1. **Enable S3 API integration** by setting in your `.env` file:
+1. **Enable S3 API integration** by setting in your `stack.env` file:
    ```
    USE_S3_API=True
    ```
 
-2. **Benefits of S3 API integration:**
-   - Maximum accuracy matching Backblaze's reported storage usage
-   - Proper handling of all object versions and complex directory structures
-   - Comprehensive object metadata
+## Maintenance
 
-3. **Requirements:**
-   - Application Key with S3 API access permissions
-   - Properly configured Backblaze B2 buckets
+### Viewing Logs
 
-For more details, see [S3 API Integration](docs/S3_API_INTEGRATION.md).
+```
+docker compose logs -f
+```
+
+### Updating the Application
+
+```
+git pull
+docker compose build
+docker compose up -d
+```
+
+### Backup Data
+
+#### For Docker Volumes
+
+```
+docker run --rm -v ${STACK_NAME}_backblaze_data:/data -v $(pwd):/backup alpine tar -czf /backup/backblaze_data.tar.gz /data
+```
+
+#### For Local Storage
+
+Simply back up the directory specified in `DATA_BASE_PATH`.
+
+## Troubleshooting
+
+### Check Container Status
+
+```
+docker compose ps
+```
+
+### Container Won't Start
+
+Check the logs for errors:
+```
+docker compose logs web
+```
+
+### WebSocket Connection Issues
+
+If you experience WebSocket connection issues:
+
+1. Make sure port 5000 is open on your firewall
+2. Check the logs for any socket.io related errors
+3. Try restarting the container
+```
+docker compose restart web
+```
 
 ## Configuration Options
 
 | Environment Variable | Description | Default |
 |---------------------|-------------|---------|
+| STACK_NAME | Prefix for container names and volumes | bbssr |
+| APP_PORT | Port to expose the web application | 5000 |
+| USE_POSTGRES | Use PostgreSQL instead of SQLite | false |
+| POSTGRES_USER | PostgreSQL username | bbssr_user |
+| POSTGRES_PASSWORD | PostgreSQL password | - |
+| POSTGRES_DB | PostgreSQL database name | bbssr_db |
 | B2_APPLICATION_KEY_ID | Backblaze B2 Application Key ID | - |
 | B2_APPLICATION_KEY | Backblaze B2 Application Key | - |
 | USE_ACCURATE_BUCKET_SIZE | Use accurate but potentially slower bucket size calculation | True |
 | USE_S3_API | Use S3 API for maximum bucket size accuracy | True |
 | SNAPSHOT_SCHEDULE_TYPE | Type of snapshot schedule ('interval', 'daily', 'weekly', 'monthly') | interval |
 | SNAPSHOT_INTERVAL_HOURS | Hours between automated snapshots (used with 'interval' schedule) | 24 |
-| SNAPSHOT_HOUR | Hour of day for scheduled snapshots (0-23) | 0 |
-| SNAPSHOT_MINUTE | Minute of hour for scheduled snapshots (0-59) | 0 |
-| SNAPSHOT_DAY_OF_WEEK | Day of week for weekly snapshots (0=Monday, 6=Sunday) | 0 |
-| SNAPSHOT_DAY_OF_MONTH | Day of month for monthly snapshots (1-31) | 1 |
 | SNAPSHOT_RETAIN_DAYS | Days to keep snapshot data | 90 |
 | COST_CHANGE_THRESHOLD | Percentage change to trigger alerts | 10.0 |
 | EMAIL_ENABLED | Enable email notifications | False |
-| EMAIL_SENDER | From email address for notifications | - |
-| EMAIL_RECIPIENTS | Comma-separated list of recipients | - |
-| EMAIL_SERVER | SMTP server hostname | - |
-| EMAIL_PORT | SMTP server port | 587 |
-| EMAIL_USERNAME | SMTP username | - |
-| EMAIL_PASSWORD | SMTP password | - |
-| EMAIL_USE_TLS | Use TLS for SMTP connection | True |
-| EMAIL_USE_SSL | Use SSL for SMTP connection | False |
-| STORAGE_COST_PER_GB | Cost per GB for storage | 0.005 |
-| DOWNLOAD_COST_PER_GB | Cost per GB for downloads | 0.01 |
-| CLASS_A_TRANSACTION_COST | Cost per 1000 Class A transactions | 0.004 |
-| CLASS_B_TRANSACTION_COST | Cost per 1000 Class B transactions | 0.0004 |
 
-## Data Persistence
+## Development
 
-Data is stored in an SQLite database at `/data/backblaze_snapshots.db` inside the container. This is mapped to a Docker volume for persistence.
-
-## Email Notifications
-
-The application can send email notifications when significant cost changes are detected:
-
-1. Enable email notifications by setting `EMAIL_ENABLED=True` in your `.env` file
-2. Configure your SMTP server settings and notification recipients
-3. Notifications will be sent automatically when cost changes exceed the threshold
-4. To test email notifications, access the `/api/test-email` endpoint
-
-Notifications include:
-- Summary of cost changes by category (storage, download, API)
-- Detailed breakdown of bucket-specific changes
-- Links to the dashboard for more information
+For development setup and contribution guidelines, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 

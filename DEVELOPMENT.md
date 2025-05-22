@@ -1,21 +1,43 @@
 # Development Guide
 
-This document provides instructions for setting up a development environment for the Backblaze Snapshot Reporting application using Docker containers. Using Docker ensures consistent development environments across different operating systems.
+This document provides instructions for setting up a development environment for the Backblaze Snapshot Reporting application and outlines our standards for Docker files, environment configuration, and code development.
 
-## Prerequisites
+## Docker Stack Standards
 
-### For All Platforms
-- [Docker](https://docs.docker.com/get-docker/) (version 20.10 or later)
-- [Docker Compose](https://docs.docker.com/compose/install/) (version 2.0 or later)
+### Docker File Structure
+
+We maintain a consistent structure for our Docker deployment files:
+
+- **docker-compose.yml**: The main configuration file with all services defined but minimal volume configuration
+- **docker-compose.external.yml**: Override file for production with external volumes
+- **docker-compose.local.yml**: Override file for development with local volumes
+- **stack.env.example**: Template for environment variables, copied to stack.env for actual use
+
+### Naming Conventions
+
+We follow these naming conventions for Docker resources:
+
+- **Stack Name**: All resources use the `bbssr` prefix by default (configurable via STACK_NAME)
+- **Volumes**: Named as `${STACK_NAME}_purpose` (e.g., bbssr_backblaze_data)
+- **Networks**: Named as `${STACK_NAME}_network_type` (e.g., bbssr_app_network)
+- **Services**: Container names follow `${STACK_NAME}_service` (e.g., bbssr_web)
+
+### Configuration Principles
+
+1. **Single Source of Truth**: Configuration lives in stack.env, not in docker-compose files
+2. **Portainer Compatibility**: Docker Compose files use syntax compatible with Portainer
+3. **Feature Toggles**: Features like PostgreSQL are enabled via environment variables
+4. **Default Values**: All environment variables have sensible defaults with `${VAR:-default}` pattern
+
+## Setup for Development
+
+### Prerequisites
+
+- Docker and Docker Compose
 - Git
 - A code editor (VS Code recommended)
 
-### For Windows Users
-- [Windows Subsystem for Linux (WSL2)](https://docs.microsoft.com/en-us/windows/wsl/install)
-- [Docker Desktop for Windows](https://docs.docker.com/desktop/windows/install/) with WSL2 backend enabled
-- A Linux distribution installed via WSL2 (Ubuntu 20.04 LTS recommended)
-
-## Setup for Linux Users
+### Local Development Setup
 
 1. **Clone the repository**
    ```bash
@@ -23,76 +45,43 @@ This document provides instructions for setting up a development environment for
    cd backblaze-snapshot-reporting
    ```
 
-2. **Create a .env file**
+2. **Create your environment file**
    ```bash
-   cp .env.example .env
+   cp stack.env.example stack.env
    ```
 
-3. **Edit the .env file with your Backblaze B2 credentials**
+3. **Edit the stack.env file with your Backblaze B2 credentials**
    ```bash
-   nano .env
+   nano stack.env
    ```
 
-4. **Build and start the Docker containers using the development configuration**
+4. **Start the application in development mode**
    ```bash
-   docker-compose -f docker-compose.dev.yml build
-   docker-compose -f docker-compose.dev.yml up -d
+   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
    ```
 
-5. **View logs**
-   ```bash
-   docker-compose -f docker-compose.dev.yml logs -f
-   ```
-
-6. **Access the application**
+5. **Access the application**
    - Open http://localhost:5000 in your web browser
 
-## Setup for Windows Users with WSL2
+### Environment Variables
 
-1. **Install and Configure Docker Desktop for Windows**
-   - Download and install [Docker Desktop for Windows](https://docs.docker.com/desktop/windows/install/)
-   - Open Docker Desktop settings
-   - Under "General", ensure "Use the WSL 2 based engine" is checked
-   - Under "Resources" > "WSL Integration", enable integration for your WSL distribution
-   - Apply and restart Docker Desktop
+All configuration is managed through environment variables in the stack.env file:
 
-2. **Open WSL2 terminal**
-   - Press Start, type "WSL" or "Ubuntu", and open your Linux distribution
-   - Verify Docker is available in WSL2:
-     ```bash
-     docker --version
-     docker-compose --version
-     ```
+1. **Stack Configuration**
+   - `STACK_NAME`: Prefix for all Docker resources (default: bbssr)
+   - `COMPOSE_PROJECT_NAME`: Project name for Docker Compose (default: bbssr)
 
-3. **Clone the repository**
-   ```bash
-   git clone https://github.com/yourusername/backblaze-snapshot-reporting.git
-   cd backblaze-snapshot-reporting
-   ```
+2. **Storage Configuration**
+   - `USE_DOCKER_VOLUMES`: Whether to use Docker volumes (true) or local paths (false)
+   - `DATA_VOLUME_NAME`: Name for the data volume (default: ${STACK_NAME}_backblaze_data)
 
-4. **Create a .env file**
-   ```bash
-   cp .env.example .env
-   ```
+3. **Database Configuration**
+   - `USE_POSTGRES`: Whether to use PostgreSQL (true) or SQLite (false)
+   - `POSTGRES_*`: PostgreSQL connection settings
 
-5. **Edit the .env file with your Backblaze B2 credentials**
-   ```bash
-   nano .env
-   ```
-
-6. **Build and start the Docker containers using the development configuration**
-   ```bash
-   docker-compose -f docker-compose.dev.yml build
-   docker-compose -f docker-compose.dev.yml up -d
-   ```
-
-7. **View the logs**
-   ```bash
-   docker-compose -f docker-compose.dev.yml logs -f
-   ```
-
-8. **Access the application**
-   - Open http://localhost:5000 in your web browser
+4. **Backblaze Configuration**
+   - `B2_APPLICATION_KEY_ID`: Your Backblaze Key ID
+   - `B2_APPLICATION_KEY`: Your Backblaze Application Key
 
 ## Development Workflow
 
@@ -100,11 +89,7 @@ This document provides instructions for setting up a development environment for
 
 1. **Start the application in development mode**
    ```bash
-   # Stop any running containers first
-   docker-compose -f docker-compose.dev.yml down
-   
-   # Start with development settings
-   docker-compose -f docker-compose.dev.yml up -d
+   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
    ```
 
 2. **Edit the code using your preferred editor**
@@ -114,87 +99,139 @@ This document provides instructions for setting up a development environment for
 
 3. **View real-time logs**
    ```bash
-   docker-compose -f docker-compose.dev.yml logs -f
+   docker compose logs -f
    ```
 
-### Testing Your Changes
+### Testing Changes
 
 1. **Run tests within the container**
    ```bash
-   docker-compose -f docker-compose.dev.yml exec web python -m unittest discover -s tests
+   docker compose exec web python -m unittest discover -s tests
    ```
 
 2. **Manually test the application**
    - Open http://localhost:5000 in your browser
-   - Test email notifications: http://localhost:5000/api/test-email
-   - Check health endpoint: http://localhost:5000/api/health
+   - Test specific features like snapshot creation
+   - Check API endpoints
 
-## Testing Your Development Environment
+### Making Docker Changes
 
-We've provided scripts to help you verify that your development environment is set up correctly.
+When modifying Docker configuration:
 
-### For Linux Users:
+1. **Update docker-compose.yml for service changes**
+   - Add new services, networks, or dependencies
+   - Always use `${STACK_NAME:-bbssr}` prefix for naming
+   - Ensure basic volumes are defined with `{}` only
 
-```bash
-# Make the script executable
-chmod +x scripts/test_dev_environment.sh
+2. **Update docker-compose.external.yml and docker-compose.local.yml for volume changes**
+   - Keep volume definitions synchronized between both files
+   - Use `external: true` in external.yml
 
-# Run the test
-./scripts/test_dev_environment.sh
-```
+3. **Update stack.env.example for any new variables**
+   - Add sensible defaults
+   - Document the purpose of new variables
+   - Keep sections organized
 
-### For Windows Users:
+4. **Test with both deployment methods**
+   ```bash
+   # Test local deployment
+   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+   
+   # Test external deployment
+   docker volume create bbssr_backblaze_data
+   docker compose -f docker-compose.yml -f docker-compose.external.yml up -d
+   ```
 
-In WSL2:
-```bash
-# Make the script executable
-chmod +x scripts/test_dev_environment.sh
-
-# Run the test
-./scripts/test_dev_environment.sh
-```
-
-Or in PowerShell:
-```powershell
-# Run the test in PowerShell
-.\scripts\Test-DevEnvironment.ps1
-```
-
-These scripts will check:
-- If Docker and Docker Compose are installed and available
-- If WSL2 is properly configured (for Windows)
-- If the necessary project files exist
-- If required ports are available
-- If your Docker configuration can successfully build the images
-
-Follow any recommendations provided by the test scripts to complete your setup.
-
-### Docker Commands Reference
+## Common Docker Commands
 
 ```bash
-# Build containers
-docker-compose -f docker-compose.dev.yml build
-
-# Start containers in the background
-docker-compose -f docker-compose.dev.yml up -d
-
-# Start containers with live output
-docker-compose -f docker-compose.dev.yml up
-
-# Stop containers
-docker-compose -f docker-compose.dev.yml down
+# Start containers with local volumes
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
 
 # View logs
-docker-compose -f docker-compose.dev.yml logs
+docker compose logs -f
 
-# Follow logs in real-time
-docker-compose -f docker-compose.dev.yml logs -f
+# Stop containers
+docker compose down
 
-# Access a shell inside the container
-docker-compose -f docker-compose.dev.yml exec web /bin/bash
+# Rebuild and restart
+docker compose -f docker-compose.yml -f docker-compose.local.yml build
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
 
-# Check container status
-docker-compose -f docker-compose.dev.yml ps
+# Access container shell
+docker compose exec web /bin/bash
+
+# View environment variables
+docker compose exec web env
+```
+
+## Database Management
+
+### SQLite (Default)
+
+The application uses SQLite by default, with the database stored at `/data/backblaze_snapshots.db`.
+
+To access the SQLite database:
+
+```bash
+# Enter the container
+docker compose exec web /bin/bash
+
+# Access SQLite
+sqlite3 /data/backblaze_snapshots.db
+
+# Run queries
+SELECT * FROM snapshots LIMIT 5;
+.exit
+```
+
+### PostgreSQL (Optional)
+
+When using PostgreSQL, configure it through stack.env:
+
+```
+USE_POSTGRES=true
+POSTGRES_USER=bbssr_user
+POSTGRES_PASSWORD=secure_password_here
+POSTGRES_DB=bbssr_db
+```
+
+To access PostgreSQL:
+
+```bash
+# Connect to the PostgreSQL container
+docker compose exec postgres psql -U bbssr_user -d bbssr_db
+
+# Run queries
+SELECT * FROM snapshots LIMIT 5;
+\q
+```
+
+## Building for Production
+
+When ready to deploy to production:
+
+1. **Create external volumes**
+   ```bash
+   docker volume create bbssr_backblaze_data
+   # If using PostgreSQL
+   docker volume create bbssr_postgres_data
+   ```
+
+2. **Deploy with external volumes**
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.external.yml up -d
+   ```
+
+## Contributing Guidelines
+
+1. Create a new branch for your feature or bug fix
+2. Make your changes
+3. Ensure Docker compatibility with our standards
+4. Test with both volume configurations
+5. Submit a pull request with clear documentation
+
+---
 
 # Initialize the database (if needed)
 docker-compose -f docker-compose.dev.yml exec web python -m scripts.init_db

@@ -253,7 +253,7 @@ class BackblazeClient:
         """List all buckets in the account"""
         return self._make_api_request('b2_list_buckets', 'post', {"accountId": self.account_id})
         
-    def get_bucket_usage(self, bucket_id, bucket_name):
+    def get_bucket_usage(self, bucket_id, bucket_name, progress_callback=None):
         """Get usage statistics for a specific bucket with caching, using the object metadata cache settings."""
         
         cache_file_path = None
@@ -270,7 +270,7 @@ class BackblazeClient:
                     cache_timestamp = cached_data.get('timestamp', 0)
                     if (time.time() - cache_timestamp) < OBJECT_CACHE_TTL_SECONDS:
                         logger.info(f"Returning cached B2 bucket usage for {bucket_name} from {cache_file_path}")
-                        # Ensure 'source' field for consistency, 'accurate' might be less relevant here or handled by caller
+                        # Ensure 'source' field for consistency
                         cached_data_payload = cached_data.get('payload', {})
                         cached_data_payload['source'] = cached_data_payload.get('source', 'b2_api_cache')
                         return cached_data_payload
@@ -281,72 +281,93 @@ class BackblazeClient:
         else:
             logger.debug("B2 API: Object cache not enabled or directory not initialized. Skipping cache read.")
 
-        # If no cache or stale, calculate usage
-        logger.info(f"Calculating B2 bucket usage for {bucket_name} (ID: {bucket_id}) via B2 API")
-        
-        # The existing B2 API logic for get_bucket_usage is an estimation based on list_file_versions.
-        # This is different from the S3 approach of iterating all objects.
-        # We will cache the result of this estimation.
-        files_response = self.list_file_versions(bucket_id, max_file_count=MAX_FILES_PER_BUCKET) # Use imported MAX_FILES_PER_BUCKET
+        # If no cache or stale, calculate usage accurately by fetching ALL files
+        logger.info(f"Calculating accurate B2 bucket usage for {bucket_name} (ID: {bucket_id}) via B2 API")
         
         total_size = 0
         file_count = 0
         largest_files = []
+        processed_files = 0
+        pagination_count = 0
 
-        # Process the first batch
-        for file in files_response.get('files', []):
-            if file.get('action') == 'upload' and file.get('fileId') != 'none':
-                file_size = file.get('contentLength', 0)
-                total_size += file_size
-                file_count += 1
-                
-                # Keep track of largest files for reporting
-                if len(largest_files) < 10:
-                    largest_files.append({
-                        'fileName': file.get('fileName', 'unknown'),
-                        'size': file_size,
-                        'uploadTimestamp': file.get('uploadTimestamp')
-                    })
-                    largest_files.sort(key=lambda x: x['size'], reverse=True)
-                elif file_size > largest_files[-1]['size']:
-                    largest_files[-1] = {
-                        'fileName': file.get('fileName', 'unknown'),
-                        'size': file_size,
-                        'uploadTimestamp': file.get('uploadTimestamp')
-                    }
-                    largest_files.sort(key=lambda x: x['size'], reverse=True)
+        # Pagination variables
+        start_filename = None
+        start_file_id = None
+        has_more = True
         
-        # If response indicates more files, make an estimate instead of fetching everything
-        if files_response.get('nextFileName') and len(files_response.get('files', [])) > 0:
-            # Calculate average file size from sample
-            avg_file_size = total_size / len(files_response.get('files', []))
+        while has_more:
+            pagination_count += 1
             
-            # Get bucket file count (single API call)
-            file_count_info = self._make_api_request('b2_list_file_names', 'post', {
-                "bucketId": bucket_id,
-                "maxFileCount": 1,  # Just get the count, not actual files
-            })
+            # Report pagination progress if callback provided
+            if progress_callback:
+                progress_callback("BUCKET_PROGRESS", {
+                    "bucket_name": bucket_name,
+                    "objects_processed_in_bucket": processed_files,
+                    "last_object_key": f"Pagination page {pagination_count}",
+                    "pagination_info": {
+                        "current_page": pagination_count,
+                        "files_processed": processed_files
+                    }
+                })
             
-            # Use the total file count to estimate overall size
-            estimated_total_count = file_count_info.get('files', [])
-            if 'nextFileName' in file_count_info:
-                # If we couldn't get total count in one call, make a conservative estimate
-                estimated_total_count = 10000  # Conservative estimate
-                logger.warning(f"Bucket {bucket_name} has more than 10,000 files, using estimate")
+            # Get a batch of files (up to 1000 per API call)
+            if start_filename is not None and start_file_id is not None:
+                files_response = self.list_file_versions(bucket_id, start_filename=start_filename, 
+                                                        start_file_id=start_file_id, max_file_count=1000)
+            else:
+                files_response = self.list_file_versions(bucket_id, max_file_count=1000)
             
-            # Update the stats with our estimate
-            file_count = estimated_total_count
-            estimated_total_size = avg_file_size * estimated_total_count
-            total_size = int(estimated_total_size)  # Use the estimate
+            # Process this batch of files
+            batch_files = files_response.get('files', [])
             
-            logger.info(f"Estimated {bucket_name} size: {total_size} bytes based on {len(files_response.get('files', []))} file samples")
+            for file in batch_files:
+                if file.get('action') == 'upload' and file.get('fileId') != 'none':
+                    file_size = file.get('contentLength', 0)
+                    total_size += file_size
+                    file_count += 1
+                    
+                    # Keep track of largest files for reporting
+                    if len(largest_files) < 10:
+                        largest_files.append({
+                            'fileName': file.get('fileName', 'unknown'),
+                            'size': file_size,
+                            'uploadTimestamp': file.get('uploadTimestamp')
+                        })
+                        largest_files.sort(key=lambda x: x['size'], reverse=True)
+                    elif file_size > largest_files[-1]['size']:
+                        largest_files[-1] = {
+                            'fileName': file.get('fileName', 'unknown'),
+                            'size': file_size,
+                            'uploadTimestamp': file.get('uploadTimestamp')
+                        }
+                        largest_files.sort(key=lambda x: x['size'], reverse=True)
+            
+            processed_files += len(batch_files)
+            
+            # More concise logging that doesn't spam the console
+            if pagination_count % 10 == 0 or processed_files % 10000 == 0 or not has_more:
+                logger.info(f"Processed {processed_files} files in {bucket_name} (Pagination: Page {pagination_count})")
+            
+            # Check if there are more files to fetch
+            if len(batch_files) > 0 and 'nextFileName' in files_response and 'nextFileId' in files_response:
+                start_filename = files_response['nextFileName']
+                start_file_id = files_response['nextFileId']
+                has_more = True
+            else:
+                # Stop if either no more pagination tokens OR no files in this batch (prevents infinite loop)
+                has_more = False
+                if len(batch_files) == 0 and 'nextFileName' in files_response:
+                    logger.warning(f"Stopping pagination for {bucket_name} at page {pagination_count}: Got nextFileName token but no files returned")
+        
+        logger.info(f"Accurate calculation of {bucket_name} size: {total_size} bytes across {file_count} files (Pages: {pagination_count})")
         
         result = {
             'total_size': total_size,
             'files_count': file_count,
             'largest_files': largest_files,
-            'accurate': False, # B2 API method is an estimation
-            'source': 'b2_api'
+            'accurate': True,  # Now using accurate count instead of estimation
+            'source': 'b2_api',
+            'pagination_pages': pagination_count
         }
 
         # Save to the object metadata cache
@@ -387,9 +408,15 @@ class BackblazeClient:
         while len(all_files) < max_files:
             response = self.list_file_versions(bucket_id, start_filename, start_file_id)
             files = response.get('files', [])
+            
+            # Check if we got any files in this batch
+            if not files:
+                logger.warning(f"No files returned in batch for bucket {bucket_id} but hit max files limit")
+                break
+                
             all_files.extend(files)
             
-            if response.get('nextFileName') and len(all_files) < max_files:
+            if len(files) > 0 and response.get('nextFileName') and len(all_files) < max_files:
                 start_filename = response.get('nextFileName')
                 start_file_id = response.get('nextFileId')
             else:
@@ -447,16 +474,16 @@ class BackblazeClient:
 
         logger.info(f"Processing bucket (B2 API): {bucket_name}")
         
-        # Simulate some progress for B2 API (as it's an estimation)
+        # Report initial progress for B2 API
         if progress_callback:
             progress_callback("BUCKET_PROGRESS", {
                 "bucket_name": bucket_name, 
-                "objects_processed_in_bucket": 0, # B2 estimation doesn't give per-object progress easily
-                "last_object_key": "N/A (B2 Estimation)"
+                "objects_processed_in_bucket": 0,
+                "last_object_key": "Starting bucket processing"
             })
 
         try:
-            bucket_stats = self.get_bucket_usage(bucket_id, bucket_name)
+            bucket_stats = self.get_bucket_usage(bucket_id, bucket_name, progress_callback=progress_callback)
             
             storage_bytes = bucket_stats.get('total_size', 0)
             storage_gb = storage_bytes / (1024 * 1024 * 1024)
@@ -485,14 +512,19 @@ class BackblazeClient:
                 'api_cost': 0,
                 'total_cost': bucket_total_cost,
                 'files_count': bucket_stats.get('files_count', 0),
-                'reporting_method': bucket_stats.get('source', 'b2_api_estimate'),
-                'largest_files': bucket_stats.get('largest_files', [])
+                'reporting_method': bucket_stats.get('source', 'b2_api'),
+                'largest_files': bucket_stats.get('largest_files', []),
+                'pagination_pages': bucket_stats.get('pagination_pages', 0)
             }
             
             if progress_callback:
                 progress_callback("BUCKET_COMPLETE", {
                     "bucket_name": bucket_name, 
-                    "objects_processed_in_bucket": bucket_stats.get('files_count', 0) # Total files as "objects"
+                    "objects_processed_in_bucket": bucket_stats.get('files_count', 0), # Total files as "objects"
+                    "pagination_info": {
+                        "total_pages": bucket_stats.get('pagination_pages', 0),
+                        "files_processed": bucket_stats.get('files_count', 0)
+                    }
                 })
             return bucket_info
 
@@ -622,15 +654,22 @@ class BackblazeClient:
         
         # Use a statistics-only approach to limit API calls
         response = self.list_file_versions(bucket_id, max_file_count=1000)
-        all_files.extend(response.get('files', []))
+        files = response.get('files', [])
+        all_files.extend(files)
         
         # If there are more files, we need to paginate
-        while response.get('nextFileName'):
+        while files and response.get('nextFileName'):
             start_filename = response.get('nextFileName')
             start_file_id = response.get('nextFileId')
             
             response = self.list_file_versions(bucket_id, start_filename, start_file_id, max_file_count=1000)
-            all_files.extend(response.get('files', []))
+            files = response.get('files', [])
+            
+            if not files:
+                logger.warning(f"Stopping pagination for {bucket_name}: Got nextFileName token but no files returned")
+                break
+                
+            all_files.extend(files)
         
         total_size = sum(file.get('contentLength', 0) for file in all_files)
         file_count = len(all_files)

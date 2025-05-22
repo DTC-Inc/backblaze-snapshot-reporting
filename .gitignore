@@ -22,6 +22,9 @@ var/
 
 # Environments
 .env
+.env.*
+stack.env
+stack.env.*
 .venv
 env/
 venv/

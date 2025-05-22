@@ -4,40 +4,322 @@
 <div class="container mt-4">
     <div class="d-flex justify-content-between align-items-center">
         <h2>Snapshot Progress Details</h2>
-        <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+        <div>
+            <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+        </div>
     </div>
     <hr/>
 
     <!-- Overall Progress -->
     <div class="mb-4">
-        <h4 id="overall_status_message">Status: Initializing...</h4>
+        <div class="d-flex justify-content-between align-items-center">
+            <h4 id="overall_status_message">Status: Initializing...</h4>
+            <div>
+                <button id="kill_snapshot_btn" class="btn btn-danger btn-sm" style="display: none;">
+                    <i class="fas fa-stop-circle"></i> Kill Snapshot
+                </button>
+            </div>
+        </div>
         <div class="progress" style="height: 25px;">
             <div id="overall_progress_bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
         </div>
-        <p id="overall_buckets_processed_text" class="mt-1">Buckets: 0 / 0</p>
-    </div>
-
-    <!-- Current Bucket Processing -->
-    <div class="card mb-4" id="current_bucket_card" style="display: none;">
-        <div class="card-header">
-            Currently Processing: <strong id="current_bucket_name_display">N/A</strong>
-        </div>
-        <div class="card-body">
-            <p id="current_bucket_object_message">Initializing...</p>
-            <p id="current_bucket_objects_processed_count_text">Objects processed: 0</p>
+        <div class="d-flex justify-content-between align-items-center mt-1">
+            <p id="overall_buckets_processed_text" class="mb-0">Buckets: 0 / 0</p>
+            <div id="parallel_ops_container" style="display: none;">
+                <div class="d-flex align-items-center">
+                    <span class="me-2">Parallel operations:</span>
+                    <input type="number" id="parallel_ops_input" class="form-control form-control-sm" style="width: 80px;" min="1" max="100" value="32">
+                    <button id="update_parallel_ops_btn" class="btn btn-sm btn-primary ms-2">Update</button>
+                </div>
+            </div>
         </div>
     </div>
 
     <!-- List of All Buckets -->
     <h4>All Buckets (<span id="total_bucket_count_list_header">0</span> total)</h4>
-    <ul class="list-group" id="bucket_status_list">
-        <!-- JS will populate this -->
-        <li class="list-group-item">Loading bucket details...</li>
-    </ul>
+    <div id="bucket_status_list_container">
+        <ul class="list-group" id="bucket_status_list">
+            <!-- JS will populate this -->
+            <li class="list-group-item">Loading bucket details...</li>
+        </ul>
+    </div>
 </div>
 
+<!-- Include Socket.IO client library -->
+<script src="https://cdn.socket.io/4.6.0/socket.io.min.js" integrity="sha384-c79GN5VsunZvi+Q/WObgk2in0CbZsHnjEqvFxC5DxHn9lTfNce2WW6h2pH6u/kF+" crossorigin="anonymous"></script>
+
 <script>
-    function updateSnapshotStatusPage() {
+    // Immediately load the initial data when the page loads
+    (function() {
+        console.log('Immediate data load function running...');
+        // Trigger an immediate data load from the server
+        fetch("{{ url_for('get_snapshot_progress_route') }}")
+            .then(response => response.json())
+            .then(data => {
+                console.log('Initial data loaded on page load:', data);
+                // Store in a global variable so it's available for UI update
+                window.initialSnapshotData = data;
+                // Update the UI immediately without waiting for socket connection
+                updateSnapshotUI(data);
+            })
+            .catch(error => {
+                console.error('Error loading initial data:', error);
+            });
+    })();
+    
+    // Socket.IO connection
+    let socket = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 10;
+    let lastUpdateTime = Date.now();
+    let socketConnected = false;
+    let manualReconnectTimer = null;
+    
+    function initSocketIO() {
+        try {
+            console.log('Attempting to establish Socket.IO connection...');
+            updateConnectionStatus('connecting');
+            
+            // Clear any existing socket to prevent duplicate connections
+            if (socket) {
+                console.log('Cleaning up existing socket connection');
+                socket.disconnect();
+                socket.close();
+                socket = null;
+            }
+            
+            // Create a connection using Socket.IO client
+            const socketOptions = {
+                reconnection: true,
+                reconnectionAttempts: maxReconnectAttempts,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 5000,
+                timeout: 60000,             // Increased timeout
+                autoConnect: true,
+                pingTimeout: 60000,         // Match server's 60s ping timeout
+                pingInterval: 25000,        // Match server's 25s ping interval
+                transports: ['websocket', 'polling']  // Try WebSocket first, fall back to polling
+            };
+            
+            // Connect to the namespace '/ws' where the server is listening
+            socket = io('/ws', socketOptions);
+            
+            // Connection events
+            socket.on('connect', function() {
+                console.log('Socket.IO connection established');
+                updateConnectionStatus('connected');
+                reconnectAttempts = 0;
+                lastUpdateTime = Date.now();
+                socketConnected = true;
+                clearManualReconnectTimer();
+                
+                // Initial fetch when connection is established
+                loadInitialStatus();
+            });
+            
+            // Listen for snapshot updates
+            socket.on('snapshot_progress_update', function(data) {
+                // Use a condensed data summary to avoid logging entire large objects
+                console.log('Received snapshot progress update:', {
+                    active: data.active,
+                    status: data.status_message,
+                    progress: data.overall_percentage + '%',
+                    buckets_total: data.total_buckets,
+                    buckets_processed: data.buckets_processed_count,
+                    current_bucket: data.current_processing_bucket_name
+                });
+                
+                lastUpdateTime = Date.now();
+                // Ensure we're showing connected when receiving messages
+                if (socket && socket.connected) {
+                    updateConnectionStatus('connected');
+                }
+                
+                // Make sure data is valid before updating UI
+                if (data) {
+                    updateSnapshotUI(data);
+                } else {
+                    console.error('Received empty data in snapshot_progress_update event');
+                }
+            });
+            
+            // Initial connection response
+            socket.on('connection_response', function(data) {
+                console.log('Received connection response:', data);
+                // This confirms the server acknowledged our connection
+                updateConnectionStatus('connected');
+                socketConnected = true;
+            });
+            
+            // Engine.IO events
+            socket.io.on('ping', function() {
+                console.log('Engine.IO ping sent');
+                lastUpdateTime = Date.now();
+            });
+            
+            socket.io.on('pong', function(latency) {
+                console.log('Engine.IO pong received, latency:', latency, 'ms');
+                lastUpdateTime = Date.now(); // Reset last update time on successful pong
+            });
+            
+            // Server pong response to our manual ping
+            socket.on('pong_response', function(data) {
+                console.log('Received pong response from server:', data);
+                lastUpdateTime = Date.now();
+            });
+            
+            // Reconnection events
+            socket.io.on('reconnect_attempt', function(attempt) {
+                reconnectAttempts = attempt;
+                console.log(`Socket.IO reconnect attempt ${attempt}/${maxReconnectAttempts}`);
+                updateConnectionStatus('reconnecting');
+            });
+            
+            socket.io.on('reconnect', function(attempt) {
+                console.log('Socket.IO reconnected after', attempt, 'attempts');
+                updateConnectionStatus('connected');
+                socketConnected = true;
+                clearManualReconnectTimer();
+                
+                // Fetch current status after reconnect
+                loadInitialStatus();
+            });
+            
+            socket.io.on('reconnect_error', function(error) {
+                console.error('Socket.IO reconnection error:', error);
+                // Continue reconnection attempts, handled by Socket.IO
+            });
+            
+            socket.io.on('reconnect_failed', function() {
+                console.log('Socket.IO reconnection failed after max attempts');
+                updateConnectionStatus('disconnected');
+                socketConnected = false;
+                showConnectionError();
+                setupManualReconnect();
+            });
+            
+            // Error handling
+            socket.on('connect_error', function(error) {
+                console.error('Socket.IO connection error:', error);
+                updateConnectionStatus('error');
+                // Don't show error yet, let the reconnection mechanism work
+            });
+            
+            socket.on('disconnect', function(reason) {
+                console.log('Socket.IO disconnected:', reason);
+                updateConnectionStatus('disconnected');
+                socketConnected = false;
+                
+                // If disconnected due to server issues, try manual reconnect later
+                if (reason === 'io server disconnect' || reason === 'transport close') {
+                    setupManualReconnect();
+                }
+            });
+            
+            socket.on('error', function(error) {
+                console.error('Socket.IO error:', error);
+                // Socket.IO will automatically try to reconnect
+            });
+            
+            // Set up a heartbeat to detect stale connections
+            setInterval(function() {
+                const timeSinceLastUpdate = Date.now() - lastUpdateTime;
+                
+                // Check connection status and update indicator
+                if (socket && socket.connected) {
+                    updateConnectionStatus('connected');
+                    
+                    // Send a manual ping if it's been too long since last update
+                    if (timeSinceLastUpdate > 30000) { // 30 seconds
+                        console.log('Sending manual ping to keep connection alive');
+                        socket.emit('ping_server');
+                    }
+                }
+                
+                // If we haven't heard from the server in a long time, force reconnect
+                if (timeSinceLastUpdate > 90000) { // 90 seconds
+                    console.log('No updates received for 90 seconds, forcing reconnect...');
+                    if (socket) {
+                        socket.disconnect();
+                        initSocketIO(); // Completely reinitialize the connection
+                    }
+                }
+            }, 15000); // Check every 15 seconds
+            
+        } catch (e) {
+            console.error('Failed to initialize Socket.IO:', e);
+            updateConnectionStatus('failed');
+            showConnectionError();
+            setupManualReconnect();
+        }
+    }
+
+    function clearManualReconnectTimer() {
+        if (manualReconnectTimer) {
+            clearTimeout(manualReconnectTimer);
+            manualReconnectTimer = null;
+        }
+    }
+    
+    function setupManualReconnect() {
+        clearManualReconnectTimer();
+        manualReconnectTimer = setTimeout(function() {
+            console.log('Attempting manual reconnection...');
+            initSocketIO();
+        }, 10000); // Try again in 10 seconds
+    }
+
+    function showConnectionError() {
+        const errorMessage = document.createElement('div');
+        errorMessage.className = 'alert alert-warning mt-3';
+        errorMessage.innerHTML = `
+            <strong>Connection Lost</strong>
+            <p>The real-time connection has been lost. The application will try to reconnect automatically.</p>
+            <button onclick="window.location.reload()" class="btn btn-primary btn-sm mt-2">Refresh Page</button>
+        `;
+        
+        // Only add the error message if it doesn't already exist
+        if (!document.getElementById('connection-error-message')) {
+            errorMessage.id = 'connection-error-message';
+            document.querySelector('.container').prepend(errorMessage);
+        }
+    }
+
+    function updateConnectionStatus(status) {
+        const statusIndicator = document.getElementById('connection_status');
+        if (!statusIndicator) return;
+        
+        console.log(`Updating connection status to: ${status}`);
+        
+        statusIndicator.className = 'connection-status';
+        statusIndicator.classList.add(status);
+        
+        switch(status) {
+            case 'connected':
+                statusIndicator.innerHTML = '<span class="badge bg-success">Connected (Socket.IO)</span>';
+                break;
+            case 'connecting':
+                statusIndicator.innerHTML = '<span class="badge bg-info">Connecting...</span>';
+                break;
+            case 'reconnecting':
+                statusIndicator.innerHTML = `<span class="badge bg-warning">Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...</span>`;
+                break;
+            case 'disconnected':
+                statusIndicator.innerHTML = '<span class="badge bg-danger">Disconnected</span>';
+                break;
+            case 'error':
+                statusIndicator.innerHTML = '<span class="badge bg-danger">Connection Error</span>';
+                break;
+            case 'failed':
+                statusIndicator.innerHTML = '<span class="badge bg-danger">Socket.IO Failed</span>';
+                break;
+            default:
+                statusIndicator.innerHTML = '<span class="badge bg-secondary">Unknown</span>';
+        }
+    }
+
+    function loadInitialStatus() {
+        console.log('Loading initial snapshot status...');
         fetch("{{ url_for('get_snapshot_progress_route') }}")
             .then(response => {
                 if (!response.ok) {
@@ -46,146 +328,395 @@
                 return response.json();
             })
             .then(data => {
-                // Determine current snapshot status
-                let currentOverallStatus = 'idle';
-                if (data.error_message) {
-                    currentOverallStatus = 'error';
-                } else if (data.active) {
-                    currentOverallStatus = 'running';
-                } else if (!data.active && data.overall_percentage === 100 && data.end_time) {
-                    currentOverallStatus = 'completed';
-                } else if (!data.active && !data.start_time) {
-                    currentOverallStatus = 'idle';
-                }
-
-
-                // Overall Progress
-                document.getElementById('overall_status_message').textContent = data.status_message || 'Status: Fetching...';
-                const overallPercentage = data.overall_percentage || 0;
-                const overallProgressBar = document.getElementById('overall_progress_bar');
-                overallProgressBar.style.width = overallPercentage + '%';
-                overallProgressBar.textContent = overallPercentage + '%';
-                overallProgressBar.setAttribute('aria-valuenow', overallPercentage);
-                document.getElementById('overall_buckets_processed_text').textContent = 'Buckets: ' + (data.buckets_processed_count || 0) + ' / ' + (data.total_buckets || 0);
-
-                overallProgressBar.classList.remove('progress-bar-animated', 'progress-bar-striped', 'bg-primary', 'bg-success', 'bg-danger');
-                if (currentOverallStatus === 'running') {
-                    overallProgressBar.classList.add('bg-primary', 'progress-bar-animated', 'progress-bar-striped');
-                } else if (currentOverallStatus === 'completed') {
-                    overallProgressBar.classList.add('bg-success');
-                } else if (currentOverallStatus === 'error') {
-                    overallProgressBar.classList.add('bg-danger');
-                } else { // idle
-                    overallProgressBar.classList.add('bg-primary'); // Or a neutral color
-                }
-
-                // Current Bucket Processing Details
-                const currentBucketCard = document.getElementById('current_bucket_card');
-                const currentProcessingBucketName = data.current_processing_bucket_name;
-                let currentBucketDetails = null;
-
-                if (currentProcessingBucketName && data.buckets) {
-                    currentBucketDetails = data.buckets.find(b => b.name === currentProcessingBucketName);
-                }
-
-                if (currentOverallStatus === 'running' && currentProcessingBucketName && currentBucketDetails) {
-                    currentBucketCard.style.display = 'block';
-                    document.getElementById('current_bucket_name_display').textContent = currentProcessingBucketName;
-                    let objectMsg = "Last object key: " + (currentBucketDetails.last_object_key || "N/A");
-                    document.getElementById('current_bucket_object_message').textContent = objectMsg;
-                    document.getElementById('current_bucket_objects_processed_count_text').textContent = "Objects processed in this bucket: " + (currentBucketDetails.objects_processed || 0);
-                } else if (currentOverallStatus === 'running' && currentProcessingBucketName) {
-                    currentBucketCard.style.display = 'block';
-                    document.getElementById('current_bucket_name_display').textContent = currentProcessingBucketName;
-                    document.getElementById('current_bucket_object_message').textContent = "Fetching details for this bucket...";
-                    document.getElementById('current_bucket_objects_processed_count_text').textContent = "Objects processed: 0";
-                } else if (currentOverallStatus === 'running' && data.total_buckets > 0 && data.buckets_processed_count < data.total_buckets) {
-                    currentBucketCard.style.display = 'block';
-                    document.getElementById('current_bucket_name_display').textContent = "Waiting for next bucket...";
-                    document.getElementById('current_bucket_object_message').textContent = "";
-                    document.getElementById('current_bucket_objects_processed_count_text').textContent = "";
-                }
-                else {
-                    currentBucketCard.style.display = 'none';
-                }
-
-                // List of All Buckets
-                const bucketListUl = document.getElementById('bucket_status_list');
-                bucketListUl.innerHTML = ''; // Clear previous list
-                document.getElementById('total_bucket_count_list_header').textContent = (data.buckets ? data.buckets.length : 0);
-
-                if (data.buckets && data.buckets.length > 0) {
-                    data.buckets.forEach(bucket => {
-                        const li = document.createElement('li');
-                        li.className = 'list-group-item d-flex justify-content-between align-items-center';
-                        
-                        let bucketDisplayName = bucket.name;
-                        if (bucket.error) {
-                            bucketDisplayName += ` <small class="text-danger fst-italic">- Error: ${bucket.error}</small>`;
-                        } else if (bucket.status === 'completed' && bucket.objects_processed !== undefined) {
-                             bucketDisplayName += ` <small class="text-muted fst-italic">- ${bucket.objects_processed} objects</small>`;
-                        }
-
-                        li.innerHTML = bucketDisplayName;
-
-                        const badge = document.createElement('span');
-                        badge.className = 'badge rounded-pill';
-                        let badgeClass = 'bg-secondary'; // Default for pending
-                        let statusText = bucket.status || 'pending';
-
-                        if (statusText.toLowerCase() === 'processing') {
-                            badgeClass = 'bg-primary';
-                        } else if (statusText.toLowerCase() === 'completed') {
-                            badgeClass = 'bg-success';
-                        } else if (statusText.toLowerCase() === 'error') {
-                            badgeClass = 'bg-danger';
-                        }
-                        badge.classList.add(badgeClass);
-                        badge.textContent = statusText.charAt(0).toUpperCase() + statusText.slice(1);
-                        
-                        li.appendChild(badge);
-                        bucketListUl.appendChild(li);
-                    });
-                } else if (currentOverallStatus === 'running') {
-                     const li = document.createElement('li');
-                     li.className = 'list-group-item text-muted';
-                     li.textContent = 'Snapshot active, waiting for bucket list...';
-                     bucketListUl.appendChild(li);
-                } else {
-                    const li = document.createElement('li');
-                    li.className = 'list-group-item text-muted';
-                    if (currentOverallStatus === 'completed' && data.total_buckets === 0) {
-                        li.textContent = 'Snapshot completed: No buckets were processed.';
-                    } else if (currentOverallStatus === 'error') {
-                         li.textContent = 'Snapshot ended with an error before processing buckets.';
-                    }
-                    else {
-                        li.textContent = 'No snapshot active or no buckets found.';
-                    }
-                    bucketListUl.appendChild(li);
-                }
-
-                // Keep polling if snapshot is running
-                if (currentOverallStatus === 'running') {
-                    setTimeout(updateSnapshotStatusPage, 2000); // Poll every 2 seconds
-                }
+                console.log('Initial status loaded:', data);
+                lastUpdateTime = Date.now();
+                updateSnapshotUI(data);
             })
             .catch(error => {
-                console.error('Error fetching snapshot status:', error);
-                document.getElementById('overall_status_message').textContent = 'Error fetching status. Check console.';
-                const overallProgressBar = document.getElementById('overall_progress_bar');
-                overallProgressBar.style.width = '100%';
-                overallProgressBar.textContent = 'Error';
-                overallProgressBar.classList.remove('bg-primary', 'progress-bar-animated', 'progress-bar-striped');
-                overallProgressBar.classList.add('bg-danger');
-                // Optionally, try polling again after a longer delay or stop
-                // setTimeout(updateSnapshotStatusPage, 5000); 
+                console.error('Error fetching initial snapshot status:', error);
             });
     }
+    
+    function killSnapshotProcess() {
+        console.log('Attempting to kill snapshot process...');
+        fetch("{{ url_for('kill_snapshot_route') }}", {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': '{{ csrf_token() if csrf_token else "" }}' // Add CSRF token
+            },
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok: ' + response.statusText);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Kill snapshot response:', data);
+            if (data.success) {
+                alert('Snapshot process has been terminated.');
+                loadInitialStatus(); // Refresh status after killing
+            } else {
+                alert('Failed to kill snapshot: ' + (data.message || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error killing snapshot:', error);
+            alert('Error killing snapshot: ' + error.message);
+        });
+    }
+    
+    function updateSnapshotUI(data) {
+        // If no data was provided (e.g., during page load), load it first
+        if (!data) {
+            console.log('No data provided to updateSnapshotUI, loading from API...');
+            loadInitialStatus();
+            return;
+        }
+        
+        // Log data for debugging - condensed version
+        console.log('Updating UI with data:', {
+            active: data.active,
+            status: data.status_message,
+            progress: data.overall_percentage + '%',
+            buckets_count: data.buckets ? data.buckets.length : 0,
+            processed: data.buckets_processed_count
+        });
+        
+        // Determine current snapshot status
+        let currentOverallStatus = 'idle';
+        if (data.error_message) {
+            currentOverallStatus = 'error';
+        } else if (data.active) {
+            currentOverallStatus = 'running';
+        } else if (!data.active && data.overall_percentage === 100 && data.end_time) {
+            currentOverallStatus = 'completed';
+        } else if (!data.active && !data.start_time) {
+            currentOverallStatus = 'idle';
+        }
 
-    // Initial call
+        // Show/hide kill button based on snapshot status
+        const killButton = document.getElementById('kill_snapshot_btn');
+        if (killButton) {
+            if (currentOverallStatus === 'running') {
+                killButton.style.display = 'inline-block';
+            } else {
+                killButton.style.display = 'none';
+            }
+        } else {
+            console.error('Kill button element not found');
+        }
+        
+        // Show/hide parallel operations controls based on snapshot status
+        const parallelOpsContainer = document.getElementById('parallel_ops_container');
+        if (parallelOpsContainer) {
+            if (currentOverallStatus === 'running') {
+                parallelOpsContainer.style.display = 'block';
+                // Update the input value if provided in the data
+                if (data.parallel_operations) {
+                    const parallelOpsInput = document.getElementById('parallel_ops_input');
+                    if (parallelOpsInput) {
+                        parallelOpsInput.value = data.parallel_operations;
+                    }
+                }
+            } else {
+                parallelOpsContainer.style.display = 'none';
+            }
+        } else {
+            console.error('Parallel operations container not found');
+        }
+
+        // Overall Progress
+        const statusMessageElement = document.getElementById('overall_status_message');
+        if (statusMessageElement) {
+            statusMessageElement.textContent = data.status_message || 'Status: Fetching...';
+        } else {
+            console.error('Status message element not found');
+        }
+        
+        const overallPercentage = data.overall_percentage || 0;
+        const overallProgressBar = document.getElementById('overall_progress_bar');
+        if (overallProgressBar) {
+            overallProgressBar.style.width = overallPercentage + '%';
+            overallProgressBar.textContent = overallPercentage + '%';
+            overallProgressBar.setAttribute('aria-valuenow', overallPercentage);
+            
+            overallProgressBar.classList.remove('progress-bar-animated', 'progress-bar-striped', 'bg-primary', 'bg-success', 'bg-danger');
+            if (currentOverallStatus === 'running') {
+                overallProgressBar.classList.add('bg-primary', 'progress-bar-animated', 'progress-bar-striped');
+            } else if (currentOverallStatus === 'completed') {
+                overallProgressBar.classList.add('bg-success');
+            } else if (currentOverallStatus === 'error') {
+                overallProgressBar.classList.add('bg-danger');
+            } else { // idle
+                overallProgressBar.classList.add('bg-primary'); // Or a neutral color
+            }
+        } else {
+            console.error('Progress bar element not found');
+        }
+        
+        // Update the overall buckets processed text with additional summary information
+        const bucketsProcessed = data.buckets_processed_count || 0;
+        const totalBuckets = data.total_buckets || 0;
+        let totalObjectsProcessed = 0;
+        let totalPagesProcessed = 0;
+        
+        // Calculate total objects and pages processed across all buckets
+        if (data.buckets && data.buckets.length > 0) {
+            data.buckets.forEach(bucket => {
+                totalObjectsProcessed += bucket.objects_processed_in_bucket || 0;
+                if (bucket.pagination_info) {
+                    totalPagesProcessed += bucket.pagination_info.current_page || 0;
+                }
+            });
+        }
+        
+        const bucketsProcessedText = document.getElementById('overall_buckets_processed_text');
+        if (bucketsProcessedText) {
+            bucketsProcessedText.textContent = 
+                `Buckets: ${bucketsProcessed} / ${totalBuckets} • ` +
+                `Objects: ${totalObjectsProcessed.toLocaleString()} • ` +
+                `Pages: ${totalPagesProcessed}`;
+        } else {
+            console.error('Buckets processed text element not found');
+        }
+
+        // List of All Buckets
+        const bucketListUl = document.getElementById('bucket_status_list');
+        const totalBucketCountHeader = document.getElementById('total_bucket_count_list_header');
+        
+        if (!bucketListUl) {
+            console.error('Bucket list element not found');
+            return;
+        }
+        
+        if (totalBucketCountHeader) {
+            totalBucketCountHeader.textContent = (data.buckets ? data.buckets.length : 0);
+        }
+        
+        bucketListUl.innerHTML = ''; // Clear previous list
+
+        if (data.buckets && data.buckets.length > 0) {
+            console.log(`Rendering ${data.buckets.length} buckets in the UI`);
+            data.buckets.forEach(bucket => {
+                const li = document.createElement('li');
+                li.className = 'list-group-item';
+                
+                // Build a more detailed bucket card
+                const bucketName = bucket.bucket_name || bucket.name;
+                const bucketStatus = bucket.status || 'pending';
+                const objectsProcessed = bucket.objects_processed_in_bucket || bucket.files_count || 0;
+                const lastObjectKey = bucket.last_object_key || 'N/A';
+                const paginationInfo = bucket.pagination_info || {};
+                const currentPage = paginationInfo.current_page || 0;
+                const totalPages = paginationInfo.total_pages || 0;
+                const isProcessing = bucketStatus.toLowerCase() === 'processing';
+                const isCompleted = bucketStatus.toLowerCase() === 'completed';
+                const isError = bucketStatus.toLowerCase() === 'error';
+                
+                // Create the header with badge
+                const header = document.createElement('div');
+                header.className = 'd-flex justify-content-between align-items-center';
+                
+                const bucketInfo = document.createElement('div');
+                bucketInfo.innerHTML = `<strong>${bucketName}</strong>`;
+                
+                const badge = document.createElement('span');
+                badge.className = 'badge rounded-pill';
+                let badgeClass = 'bg-secondary'; // Default for pending
+                
+                if (isProcessing) {
+                    badgeClass = 'bg-primary';
+                } else if (isCompleted) {
+                    badgeClass = 'bg-success';
+                } else if (isError) {
+                    badgeClass = 'bg-danger';
+                }
+                
+                badge.classList.add(badgeClass);
+                badge.textContent = bucketStatus.charAt(0).toUpperCase() + bucketStatus.slice(1);
+                
+                header.appendChild(bucketInfo);
+                header.appendChild(badge);
+                li.appendChild(header);
+                
+                // Create content section
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'mt-2';
+                
+                // Show different content based on status
+                if (isProcessing) {
+                    // Currently processing bucket
+                    contentDiv.innerHTML = `
+                        <div class="row">
+                            <div class="col-12">
+                                <p class="mb-1"><small>Last object key: ${lastObjectKey}</small></p>
+                                <p class="mb-2"><small>Objects processed: ${objectsProcessed.toLocaleString()}</small></p>
+                            </div>
+                        </div>
+                    `;
+                    
+                    // Add pagination progress if available
+                    if (currentPage > 0) {
+                        let paginationPercent = 0;
+                        if (totalPages > 0) {
+                            paginationPercent = Math.min(Math.round((currentPage / totalPages) * 100), 100);
+                        } else {
+                            paginationPercent = Math.min(currentPage * 10, 100); // Estimate if total unknown
+                        }
+                        
+                        contentDiv.innerHTML += `
+                            <div class="progress" style="height: 10px;">
+                                <div class="progress-bar bg-info" role="progressbar" 
+                                    style="width: ${paginationPercent}%;" 
+                                    aria-valuenow="${paginationPercent}" 
+                                    aria-valuemin="0" 
+                                    aria-valuemax="100"></div>
+                            </div>
+                            <p class="text-muted mt-1">
+                                <small>Page ${currentPage} ${totalPages > 0 ? 'of ' + totalPages : ''}</small>
+                            </p>
+                        `;
+                    }
+                } else if (isCompleted) {
+                    // Completed bucket
+                    contentDiv.innerHTML = `
+                        <div class="d-flex justify-content-between">
+                            <div>
+                                <p class="text-muted mb-0"><small>Objects processed: ${objectsProcessed.toLocaleString()}</small></p>
+                            </div>
+                            <div>
+                                <p class="text-muted mb-0"><small>${totalPages > 0 ? 'Pages: ' + totalPages : ''}</small></p>
+                            </div>
+                        </div>
+                    `;
+                } else if (isError) {
+                    // Error bucket
+                    contentDiv.innerHTML = `
+                        <div class="alert alert-danger py-1 mt-1">
+                            <small>${bucket.error || 'An error occurred while processing this bucket'}</small>
+                        </div>
+                    `;
+                } else {
+                    // Pending bucket
+                    contentDiv.innerHTML = `
+                        <p class="text-muted mb-0"><small>Waiting to be processed...</small></p>
+                    `;
+                }
+                
+                li.appendChild(contentDiv);
+                bucketListUl.appendChild(li);
+            });
+        } else if (currentOverallStatus === 'running') {
+             const li = document.createElement('li');
+             li.className = 'list-group-item text-muted';
+             li.textContent = 'Snapshot active, waiting for bucket list...';
+             bucketListUl.appendChild(li);
+        } else {
+            const li = document.createElement('li');
+            li.className = 'list-group-item text-muted';
+            if (currentOverallStatus === 'completed' && data.total_buckets === 0) {
+                li.textContent = 'Snapshot completed: No buckets were processed.';
+            } else if (currentOverallStatus === 'error') {
+                 li.textContent = 'Snapshot ended with an error before processing buckets.';
+            } else {
+                li.textContent = 'No snapshot active or no buckets found.';
+            }
+            bucketListUl.appendChild(li);
+        }
+    }
+
+    // Initial setup
     document.addEventListener('DOMContentLoaded', function() {
-        updateSnapshotStatusPage();
+        // Add connection status indicator to the page
+        const statusContainer = document.createElement('div');
+        statusContainer.id = 'connection_status';
+        statusContainer.className = 'connection-status';
+        statusContainer.style.position = 'fixed';
+        statusContainer.style.bottom = '10px';
+        statusContainer.style.right = '10px';
+        statusContainer.style.zIndex = '1000';
+        document.body.appendChild(statusContainer);
+        
+        updateConnectionStatus('initializing');
+        
+        // Use Socket.IO if available
+        if (typeof io !== 'undefined') {
+            initSocketIO();
+        } else {
+            console.log('Socket.IO not available.');
+            updateConnectionStatus('failed');
+            showConnectionError();
+        }
+        
+        // Set up kill snapshot button event handler
+        const killButton = document.getElementById('kill_snapshot_btn');
+        if (killButton) {
+            killButton.addEventListener('click', function() {
+                if (confirm('Are you sure you want to kill the current snapshot process?')) {
+                    killSnapshotProcess();
+                }
+            });
+        }
+        
+        // Set up update parallel operations button event handler
+        const updateParallelOpsButton = document.getElementById('update_parallel_ops_btn');
+        if (updateParallelOpsButton) {
+            updateParallelOpsButton.addEventListener('click', function() {
+                updateParallelOperations();
+            });
+        }
     });
+    
+    function updateParallelOperations() {
+        const parallelOpsInput = document.getElementById('parallel_ops_input');
+        const parallelOps = parseInt(parallelOpsInput.value);
+        
+        if (isNaN(parallelOps) || parallelOps < 1 || parallelOps > 100) {
+            alert('Please enter a valid number between 1 and 100');
+            return;
+        }
+        
+        fetch("{{ url_for('update_parallel_operations') }}", {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                parallel_operations: parallelOps
+            })
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok: ' + response.statusText);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Update parallel operations response:', data);
+            if (data.success) {
+                const statusMessage = document.getElementById('overall_status_message');
+                statusMessage.textContent = 'Parallel operations updated: ' + data.message;
+                
+                // Briefly highlight the parallel operations control to show it was updated
+                const container = document.getElementById('parallel_ops_container');
+                container.style.backgroundColor = '#d4edda';
+                container.style.padding = '5px';
+                container.style.borderRadius = '5px';
+                setTimeout(() => {
+                    container.style.backgroundColor = '';
+                    container.style.padding = '';
+                    container.style.borderRadius = '';
+                }, 2000);
+            } else {
+                alert('Failed to update parallel operations: ' + (data.message || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error updating parallel operations:', error);
+            alert('Error updating parallel operations: ' + error.message);
+        });
+    }
 </script>
 {% endblock %}

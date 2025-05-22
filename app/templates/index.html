@@ -5,17 +5,40 @@
         <h1 class="h2">Dashboard</h1>
         <div class="btn-toolbar mb-2 mb-md-0">
             <div class="btn-group me-2">
-                <form action="{{ url_for('new_snapshot') }}" method="post" id="newSnapshotForm">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button type="submit" id="takeSnapshotBtn" class="btn btn-sm btn-outline-secondary">Take New Snapshot</button>
-                </form>
+                <div class="dropdown">
+                    <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" id="snapshotDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                        Take New Snapshot
+                    </button>
+                    <ul class="dropdown-menu" aria-labelledby="snapshotDropdown">
+                        <li>
+                            <form action="{{ url_for('new_snapshot') }}" method="post" id="newSnapshotForm" class="px-2 py-1">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-sm btn-link text-decoration-none">Normal Snapshot</button>
+                            </form>
+                        </li>
+                        <li>
+                            <form action="{{ url_for('new_snapshot') }}" method="post" id="newSnapshotFormWithCache" class="px-2 py-1">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <input type="hidden" name="clear_cache" value="true">
+                                <button type="submit" class="btn btn-sm btn-link text-decoration-none">Clear Cache & Snapshot</button>
+                            </form>
+                        </li>
+                    </ul>
+                </div>
             </div>
         </div>
     </div>
 
     <!-- Snapshot Progress Section -->
     <div id="snapshotProgressContainer" class="mb-4" style="display: none;">
-        <h5 id="snapshotStatusText">Snapshot in progress...</h5>
+        <div class="d-flex justify-content-between align-items-center">
+            <h5 id="snapshotStatusText">Snapshot in progress...</h5>
+            <div>
+                <button id="killSnapshotBtn" class="btn btn-sm btn-danger" style="display: none;">
+                    <i class="fas fa-stop-circle"></i> Kill Snapshot
+                </button>
+            </div>
+        </div>
         <div class="progress" style="height: 25px;">
             <div id="snapshotProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
         </div>

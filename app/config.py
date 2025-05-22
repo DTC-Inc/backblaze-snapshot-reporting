@@ -43,7 +43,7 @@ CLASS_B_TRANSACTION_COST = float(os.getenv('CLASS_B_TRANSACTION_COST', '0.004'))
 CLASS_C_TRANSACTION_COST = float(os.getenv('CLASS_C_TRANSACTION_COST', '0.004')) # Cost per 1,000 Class C transactions (typically free, but good to have)
 
 # Number of parallel operations for processing buckets during snapshot
-PARALLEL_BUCKET_OPERATIONS = int(os.getenv('PARALLEL_BUCKET_OPERATIONS', '16'))
+PARALLEL_BUCKET_OPERATIONS = int(os.getenv('PARALLEL_BUCKET_OPERATIONS', '32'))
 
 # API Caching
 API_CACHE_TTL = int(os.getenv('API_CACHE_TTL', '3600'))  # Cache API responses for 1 hour by default

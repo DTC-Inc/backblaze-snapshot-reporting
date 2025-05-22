@@ -220,31 +220,15 @@ class S3BackblazeClient(BackblazeClient):
         self._initialize_s3_client(force_reinitialize=True)
 
 
-    def get_s3_bucket_usage(self, bucket_name):
-        """Get detailed bucket usage information using the S3 API
-        
-        Args:
-            bucket_name: The name of the bucket to analyze
-            
-        Returns:
-            A dictionary with bucket statistics or None if S3 API is not available
-        """
-        if not self.s3_client:
-            logger.warning("S3 client not available. Cannot use S3 API for bucket statistics.")
-            return None
-
-        cache_file_path = None
+    def get_s3_bucket_usage(self, bucket_name, progress_callback=None):
+        """Get usage statistics for a specific bucket via the S3 API."""
         absolute_cache_dir = None
-
-        if CACHE_ENABLED:
-            # CACHE_DIR from config is 'instance/cache/object_metadata'
-            # Assume this is relative to the project root (where the instance folder typically resides)
-            # For a Flask app, current_app.instance_path would be the ideal base.
-            # Here, we use os.getcwd() as a proxy for the project root.
+        cache_file_path = None
+        
+        # Cache handling setup
+        if CACHE_ENABLED and CACHE_DIR:
             try:
-                project_root = os.getcwd() 
-                absolute_cache_dir = os.path.abspath(os.path.join(project_root, CACHE_DIR))
-                
+                absolute_cache_dir = os.path.abspath(CACHE_DIR)
                 cache_filename = f"s3_bucket_usage_{bucket_name}.json"
                 cache_file_path = os.path.join(absolute_cache_dir, cache_filename)
                 logger.debug(f"Cache file path for {bucket_name}: {cache_file_path}")
@@ -304,6 +288,7 @@ class S3BackblazeClient(BackblazeClient):
             total_size = 0
             file_count = 0
             largest_files = []
+            pagination_count = 0
             
             # Process objects
             logger.info(f"Getting S3 bucket stats for {bucket_name}")
@@ -328,18 +313,36 @@ class S3BackblazeClient(BackblazeClient):
                         }
                         largest_files.sort(key=lambda x: x['size'], reverse=True)
                         
+                # Track pagination - S3 internally paginates by 1000 objects
                 if file_count % 1000 == 0:
-                    logger.info(f"Processed {file_count} objects in {bucket_name}...")
+                    pagination_count = file_count // 1000
+                    logger.info(f"Processed {file_count} objects in {bucket_name} (Pagination: Page {pagination_count})")
+                    
+                    # Report pagination progress if callback provided
+                    if progress_callback:
+                        progress_callback("BUCKET_PROGRESS", {
+                            "bucket_name": bucket_name,
+                            "objects_processed_in_bucket": file_count,
+                            "last_object_key": obj.key if hasattr(obj, 'key') else f"Page {pagination_count}",
+                            "pagination_info": {
+                                "current_page": pagination_count,
+                                "files_processed": file_count
+                            }
+                        })
+            
+            # Final pagination count
+            pagination_count = (file_count // 1000) + (1 if file_count % 1000 > 0 else 0)
             
             result = {
                 'total_size': total_size,
                 'files_count': file_count,
                 'largest_files': largest_files,
                 'accurate': True,
-                'source': 's3_api'
+                'source': 's3_api',
+                'pagination_pages': pagination_count
             }
             
-            logger.info(f"S3 API bucket stats for {bucket_name}: {total_size} bytes across {file_count} files")
+            logger.info(f"S3 API bucket stats for {bucket_name}: {total_size} bytes across {file_count} files (Pages: {pagination_count})")
 
             # Write to cache
             if CACHE_ENABLED and cache_file_path and absolute_cache_dir:
@@ -502,63 +505,91 @@ class S3BackblazeClient(BackblazeClient):
 
             # Helper function to process a single S3 bucket
             def process_s3_bucket(bucket_info):
-                bucket_name = bucket_info['bucketName']
-                bucket_id = bucket_info['bucketId'] # S3 bucket name often serves as its ID in Boto3 contexts
-
+                """Process a single bucket to get its stats (called by ThreadPoolExecutor)"""
+                bucket_name = bucket_info['name']
+                bucket_id = bucket_info.get('id')  # May not be needed for S3 API
+                
+                # Report start of bucket processing
                 if progress_callback:
                     progress_callback("BUCKET_START", {"bucket_name": bucket_name})
                 
-                logger.info(f"Processing S3 bucket: {bucket_name}")
+                logger.info(f"Processing bucket (S3 API): {bucket_name}")
                 
-                # Use self.get_s3_bucket_usage which should be accurate for S3
-                # This method already handles caching internally.
-                bucket_stats = self.get_s3_bucket_usage(bucket_name) # This is the S3 specific one
-                
-                if not bucket_stats:
-                    logger.error(f"Failed to get stats for S3 bucket: {bucket_name}")
-                    if progress_callback:
-                        progress_callback("BUCKET_ERROR", {"bucket_name": bucket_name, "error": "Failed to retrieve stats"})
-                    return None # Skip this bucket if stats failed
-
-                storage_bytes = bucket_stats.get('total_size', 0)
-                storage_gb = storage_bytes / (1024 * 1024 * 1024) if storage_bytes > 0 else 0
-                # Use storage cost from parent class or define here if different for S3 context
-                storage_cost = storage_gb * getattr(self, 'STORAGE_COST_PER_GB', 0.005) 
-                
-                # S3 API (list_objects_v2) doesn't directly give download bytes for a period.
-                # This would typically come from billing/usage reports over time.
-                # For snapshot consistency, we'll report 0 unless a mechanism to fetch this is added.
-                current_download_bytes = 0 
-                download_gb = 0
-                download_cost = 0
-                
-                bucket_result = {
-                    'bucket_id': bucket_id, # Using S3 bucket name as ID
-                    'bucket_name': bucket_name,
-                    'storage_bytes': storage_bytes,
-                    'storage_cost': storage_cost,
-                    'download_bytes': current_download_bytes, # Placeholder for S3
-                    'download_cost': download_cost,         # Placeholder for S3
-                    'file_count': bucket_stats.get('files_count', 0),
-                    'largest_files': bucket_stats.get('largest_files', []),
-                    'reporting_method': bucket_stats.get('source', 's3_api'), # Should be 's3_api' or 's3_api_cache'
-                    'last_modified_times': [], # Placeholder, could be populated if needed
-                    'objects_processed_in_bucket': bucket_stats.get('files_count', 0) # For progress
-                }
-                
+                # Report initial progress
                 if progress_callback:
-                    progress_callback("BUCKET_PROGRESS", { # Send one progress update per bucket for S3
+                    progress_callback("BUCKET_PROGRESS", {
                         "bucket_name": bucket_name,
-                        "objects_processed_in_bucket": bucket_stats.get('files_count', 0),
-                        "total_objects_in_bucket": bucket_stats.get('files_count', 0) # Assuming get_s3_bucket_usage processes all
+                        "objects_processed_in_bucket": 0,
+                        "last_object_key": "Starting S3 bucket processing"
                     })
                 
-                if progress_callback: # Signal completion for this bucket
-                    progress_callback("BUCKET_COMPLETE", {
-                        "bucket_name": bucket_name, 
-                        "objects_processed_in_bucket": bucket_stats.get('files_count', 0)
-                    })
-                return bucket_result
+                try:
+                    # Use the enhanced S3 bucket usage method that directly uses boto3
+                    bucket_stats = self.get_s3_bucket_usage(bucket_name, progress_callback=progress_callback)
+                    
+                    if not bucket_stats:
+                        logger.warning(f"Could not get S3 stats for bucket {bucket_name}, skipping")
+                        if progress_callback:
+                            progress_callback("BUCKET_ERROR", {
+                                "bucket_name": bucket_name, 
+                                "error": "Failed to get S3 bucket statistics"
+                            })
+                        return None
+                    
+                    # Extract and calculate costs
+                    storage_bytes = bucket_stats.get('total_size', 0)
+                    storage_gb = storage_bytes / (1024 * 1024 * 1024)
+                    storage_cost = storage_gb * self.STORAGE_COST_PER_GB
+                    
+                    # Get download stats from previous snapshot if available
+                    download_bytes = 0
+                    if prev_snapshot:
+                        for prev_bucket in prev_snapshot.get('buckets', []):
+                            if prev_bucket.get('name') == bucket_name:
+                                download_bytes = prev_bucket.get('download_bytes', 0)
+                                break
+                    
+                    download_gb = download_bytes / (1024 * 1024 * 1024)
+                    download_cost = max(0, download_gb * self.DOWNLOAD_COST_PER_GB)
+                    
+                    # Total cost for this bucket
+                    bucket_total_cost = storage_cost + download_cost
+                    
+                    # Create the bucket info object for the snapshot
+                    bucket_result = {
+                        'name': bucket_name,
+                        'id': bucket_id or bucket_name,  # Use name as ID if no ID provided
+                        'storage_bytes': storage_bytes,
+                        'storage_cost': storage_cost,
+                        'download_bytes': download_bytes,
+                        'download_cost': download_cost,
+                        'api_calls': 0,  # Not tracked in same way for S3
+                        'api_cost': 0,   # Not tracked in same way for S3
+                        'total_cost': bucket_total_cost,
+                        'files_count': bucket_stats.get('files_count', 0),
+                        'reporting_method': bucket_stats.get('source', 's3_api'),
+                        'largest_files': bucket_stats.get('largest_files', []),
+                        'pagination_pages': bucket_stats.get('pagination_pages', 0)
+                    }
+                    
+                    # Report completion
+                    if progress_callback:
+                        progress_callback("BUCKET_COMPLETE", {
+                            "bucket_name": bucket_name,
+                            "objects_processed_in_bucket": bucket_stats.get('files_count', 0),
+                            "pagination_info": {
+                                "total_pages": bucket_stats.get('pagination_pages', 0),
+                                "files_processed": bucket_stats.get('files_count', 0)
+                            }
+                        })
+                    
+                    return bucket_result
+                    
+                except Exception as e:
+                    logger.error(f"Error processing S3 bucket {bucket_name}: {str(e)}", exc_info=True)
+                    if progress_callback:
+                        progress_callback("BUCKET_ERROR", {"bucket_name": bucket_name, "error": str(e)})
+                    return None
 
             # Use ThreadPoolExecutor for parallel processing
             bucket_data_results = []

@@ -36,6 +36,11 @@
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link {% if request.path == '/snapshot/status' %}active{% endif %}" href="{{ url_for('snapshot_status_detail') }}">
+                                Snapshot Status
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link {% if request.path.startswith(url_for('schedule_routes.schedule_settings')) %}active{% endif %}" href="{{ url_for('schedule_routes.schedule_settings') }}">
                                 Snapshot Scheduling
                             </a>
@@ -48,11 +53,26 @@
                             <a class="nav-link {% if request.path == '/settings/api' %}active{% endif %}" href="{{ url_for('api_settings') }}">
                                 API Credentials
                             </a>
-                        </li>                        <li class="nav-item mt-2">
-                            <form action="{{ url_for('new_snapshot') }}" method="post">
-                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                <button type="submit" class="btn btn-sm btn-primary">Take New Snapshot</button>
-                            </form>
+                        </li>
+                        <li class="nav-item dropdown mt-2">
+                            <button class="btn btn-sm btn-primary dropdown-toggle" type="button" id="snapshotDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                                Take Snapshot
+                            </button>
+                            <ul class="dropdown-menu" aria-labelledby="snapshotDropdown">
+                                <li>
+                                    <form action="{{ url_for('new_snapshot') }}" method="post" class="px-2 py-1">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn btn-sm btn-link text-decoration-none">Normal Snapshot</button>
+                                    </form>
+                                </li>
+                                <li>
+                                    <form action="{{ url_for('new_snapshot') }}" method="post" class="px-2 py-1">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <input type="hidden" name="clear_cache" value="true">
+                                        <button type="submit" class="btn btn-sm btn-link text-decoration-none">Clear Cache & Snapshot</button>
+                                    </form>
+                                </li>
+                            </ul>
                         </li>
                     </ul>
                 </div>

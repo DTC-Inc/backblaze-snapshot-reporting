@@ -62,21 +62,55 @@ document.addEventListener('DOMContentLoaded', function() {
         downloadReportBtn.addEventListener('click', generateReport);
     }
 
+    // Set up kill snapshot button
+    const killSnapshotBtn = document.getElementById('killSnapshotBtn');
+    if (killSnapshotBtn) {
+        killSnapshotBtn.addEventListener('click', function() {
+            if (confirm('Are you sure you want to kill the current snapshot process?')) {
+                killSnapshotProcess();
+            }
+        });
+    }
+
     // Snapshot Progress Handling
-    const takeSnapshotBtn = document.getElementById('takeSnapshotBtn');
     const snapshotProgressContainer = document.getElementById('snapshotProgressContainer');
     const snapshotProgressBar = document.getElementById('snapshotProgressBar');
     const snapshotStatusText = document.getElementById('snapshotStatusText');
     const snapshotMessageText = document.getElementById('snapshotMessageText');
     let progressInterval;
 
-    if (takeSnapshotBtn) {
-        // Check initial progress on page load
-        updateSnapshotProgress(); 
-
-        takeSnapshotBtn.addEventListener('click', function(event) {
-            // Form submission will be handled by the browser, triggering the backend.
-            // Start polling for progress immediately.
+    // Initialize snapshot progress on page load
+    updateSnapshotProgress();
+    
+    // Handle the clear cache checkbox in modal
+    const clearCacheCheckbox = document.getElementById('clearCacheCheckbox');
+    const modalClearCache = document.getElementById('modalClearCache');
+    if (clearCacheCheckbox && modalClearCache) {
+        clearCacheCheckbox.addEventListener('change', function() {
+            modalClearCache.value = this.checked ? 'true' : '';
+        });
+    }
+    
+    // Handle snapshot buttons in the dropdown
+    const snapshotForms = document.querySelectorAll('form[action*="new_snapshot"]');
+    const snapshotButtons = document.querySelectorAll('form[action*="new_snapshot"] button[type="submit"]');
+    const snapshotDropdownButtons = document.querySelectorAll('button[id*="snapshotDropdown"]');
+    
+    snapshotForms.forEach(form => {
+        form.addEventListener('submit', function(event) {
+            // Disable all snapshot buttons to prevent multiple submissions
+            snapshotButtons.forEach(button => {
+                button.disabled = true;
+                button.classList.add('disabled');
+            });
+            
+            // Also disable dropdown buttons
+            snapshotDropdownButtons.forEach(button => {
+                button.disabled = true;
+                button.classList.add('disabled');
+            });
+            
+            // Start polling for progress immediately
             if (snapshotProgressContainer) snapshotProgressContainer.style.display = 'block';
             if (snapshotStatusText) snapshotStatusText.textContent = 'Snapshot initiated...';
             if (snapshotProgressBar) {
@@ -94,7 +128,48 @@ document.addEventListener('DOMContentLoaded', function() {
             if (progressInterval) {
                 clearInterval(progressInterval);
             }
-            progressInterval = setInterval(updateSnapshotProgress, 2000); 
+            progressInterval = setInterval(updateSnapshotProgress, 2000);
+        });
+    });
+
+    function killSnapshotProcess() {
+        fetch('/snapshot/kill', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok: ' + response.statusText);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Kill snapshot response:', data);
+            if (data.success) {
+                alert('Snapshot process has been terminated.');
+                // Update UI immediately
+                if (snapshotStatusText) snapshotStatusText.textContent = 'Snapshot Terminated';
+                if (snapshotProgressBar) {
+                    snapshotProgressBar.classList.remove('progress-bar-animated', 'progress-bar-striped', 'bg-primary', 'bg-success');
+                    snapshotProgressBar.classList.add('bg-danger');
+                }
+                if (snapshotMessageText) snapshotMessageText.textContent = 'Snapshot was manually terminated';
+                
+                // Hide kill button
+                const killBtn = document.getElementById('killSnapshotBtn');
+                if (killBtn) killBtn.style.display = 'none';
+                
+                // Refresh status after a moment
+                setTimeout(updateSnapshotProgress, 1000);
+            } else {
+                alert('Failed to kill snapshot: ' + (data.message || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error killing snapshot:', error);
+            alert('Error killing snapshot: ' + error.message);
         });
     }
 
@@ -113,6 +188,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
 
                 const viewDetailsBtn = document.getElementById('viewProgressDetailsBtn');
+                const killBtn = document.getElementById('killSnapshotBtn');
                 let currentStatus = 'idle';
 
                 if (data.error_message) {
@@ -125,15 +201,24 @@ document.addEventListener('DOMContentLoaded', function() {
                     currentStatus = 'idle'; // Or 'pending'
                 }
 
-
-                if (currentStatus !== 'idle' || data.overall_percentage > 0) {
+                // Always show progress if it's running, completed or had an error
+                if (currentStatus === 'running' || currentStatus === 'completed' || currentStatus === 'error') {
                     snapshotProgressContainer.style.display = 'block';
-                } else {
+                } else if (data.overall_percentage > 0) {
+                    // Also show if there's any progress
+                    snapshotProgressContainer.style.display = 'block';
+                } else if (currentStatus === 'idle' && data.overall_percentage === 0) {
                     snapshotProgressContainer.style.display = 'none';
                 }
                 
+                // Always show the details button if we have a snapshot in progress or completed
                 if (viewDetailsBtn) {
-                    viewDetailsBtn.style.display = data.active ? 'inline-block' : 'none';
+                    viewDetailsBtn.style.display = (currentStatus === 'running' || currentStatus === 'completed' || currentStatus === 'error') ? 'inline-block' : 'none';
+                }
+                
+                // Show kill button only for running snapshots
+                if (killBtn) {
+                    killBtn.style.display = (currentStatus === 'running') ? 'inline-block' : 'none';
                 }
 
                 snapshotProgressBar.style.width = data.overall_percentage + '%';
@@ -141,30 +226,99 @@ document.addEventListener('DOMContentLoaded', function() {
                 snapshotProgressBar.setAttribute('aria-valuenow', data.overall_percentage);
                 snapshotMessageText.textContent = data.status_message || 'Fetching status...';
 
-
                 snapshotProgressBar.classList.remove('bg-success', 'bg-danger', 'bg-primary', 'progress-bar-animated', 'progress-bar-striped');
 
                 if (currentStatus === 'running') {
                     snapshotStatusText.textContent = 'Snapshot Running...';
                     snapshotProgressBar.classList.add('bg-primary', 'progress-bar-animated', 'progress-bar-striped');
+                    
+                    // Disable all snapshot buttons while running
+                    document.querySelectorAll('form[action*="new_snapshot"] button[type="submit"]').forEach(button => {
+                        button.disabled = true;
+                        button.classList.add('disabled');
+                    });
+                    document.querySelectorAll('button[id*="snapshotDropdown"]').forEach(button => {
+                        button.disabled = true;
+                        button.classList.add('disabled');
+                    });
+                    
                     if (!progressInterval) { 
                          progressInterval = setInterval(updateSnapshotProgress, 2000);
                     }
                 } else if (currentStatus === 'completed') {
                     snapshotStatusText.textContent = 'Snapshot Completed';
                     snapshotProgressBar.classList.add('bg-success');
-                    if (progressInterval) clearInterval(progressInterval);
-                     if (viewDetailsBtn) viewDetailsBtn.style.display = 'inline-block'; // Keep details button visible
+                    
+                    // Enable snapshot buttons after completion
+                    document.querySelectorAll('form[action*="new_snapshot"] button[type="submit"]').forEach(button => {
+                        button.disabled = false;
+                        button.classList.remove('disabled');
+                    });
+                    document.querySelectorAll('button[id*="snapshotDropdown"]').forEach(button => {
+                        button.disabled = false;
+                        button.classList.remove('disabled');
+                    });
+                    
+                    // Don't clear the interval immediately after completion to ensure visibility
+                    // Instead, continue polling at a slower rate
+                    if (progressInterval) {
+                        clearInterval(progressInterval);
+                        progressInterval = setInterval(updateSnapshotProgress, 10000); // Slower polling after completion
+                    }
                 } else if (currentStatus === 'error') {
                     snapshotStatusText.textContent = 'Snapshot Error';
                     snapshotProgressBar.classList.add('bg-danger');
                     snapshotMessageText.textContent = data.error_message || 'An unknown error occurred.';
-                    if (progressInterval) clearInterval(progressInterval);
-                    if (viewDetailsBtn) viewDetailsBtn.style.display = 'inline-block'; // Keep details button visible
+                    
+                    // Enable snapshot buttons after error
+                    document.querySelectorAll('form[action*="new_snapshot"] button[type="submit"]').forEach(button => {
+                        button.disabled = false;
+                        button.classList.remove('disabled');
+                    });
+                    document.querySelectorAll('button[id*="snapshotDropdown"]').forEach(button => {
+                        button.disabled = false;
+                        button.classList.remove('disabled');
+                    });
+                    
+                    // Keep polling even on error, but slower
+                    if (progressInterval) {
+                        clearInterval(progressInterval);
+                        progressInterval = setInterval(updateSnapshotProgress, 10000);
+                    }
                 } else { // Idle or pending
                     snapshotStatusText.textContent = 'Snapshot Idle';
                     snapshotProgressBar.classList.add('bg-primary'); // Or some other default
+                    
+                    // Enable snapshot buttons when idle
+                    document.querySelectorAll('form[action*="new_snapshot"] button[type="submit"]').forEach(button => {
+                        button.disabled = false;
+                        button.classList.remove('disabled');
+                    });
+                    document.querySelectorAll('button[id*="snapshotDropdown"]').forEach(button => {
+                        button.disabled = false;
+                        button.classList.remove('disabled');
+                    });
+                    
                     if (progressInterval) clearInterval(progressInterval);
+                }
+
+                // Add pagination info to the message if available
+                if (data.active_bucket && data.active_bucket.pagination_info) {
+                    const paginationInfo = data.active_bucket.pagination_info;
+                    snapshotMessageText.innerHTML = `
+                        <div class="fw-bold mb-2">Current bucket: ${data.active_bucket.bucket_name}</div>
+                        <div>Processed: ${data.active_bucket.objects_processed_in_bucket.toLocaleString()} objects</div>
+                        <div>Current page: ${paginationInfo.current_page || 'N/A'}</div>
+                        <div>Last object: ${data.active_bucket.last_object_key || 'N/A'}</div>
+                    `;
+                } else if (data.active_bucket) {
+                    snapshotMessageText.innerHTML = `
+                        <div class="fw-bold mb-2">Current bucket: ${data.active_bucket.bucket_name}</div>
+                        <div>Processed: ${data.active_bucket.objects_processed_in_bucket.toLocaleString()} objects</div>
+                        <div>Last object: ${data.active_bucket.last_object_key || 'N/A'}</div>
+                    `;
+                } else {
+                    snapshotMessageText.textContent = '';
                 }
             })
             .catch(error => {

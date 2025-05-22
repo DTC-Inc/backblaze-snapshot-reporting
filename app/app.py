@@ -5,10 +5,20 @@ import threading # Import threading
 from threading import Lock
 import time
 from datetime import datetime, timedelta
+import copy
 
 from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, session, current_app
 from flask_wtf.csrf import CSRFProtect # Removed unused validate_csrf
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+
+# Add Flask-SocketIO for WebSockets
+try:
+    from flask_socketio import SocketIO, emit
+    socketio_available = True
+except ImportError:
+    socketio_available = False
+    print("WARNING: flask_socketio not installed. WebSocket functionality will be disabled.")
+    print("To enable WebSockets, install with: pip install flask-socketio")
 
 # Configure logging first so logger is available for imports
 logging.basicConfig(
@@ -78,6 +88,21 @@ app.secret_key = SECRET_KEY
 app.config['DEBUG'] = DEBUG
 app.config['PARALLEL_BUCKET_OPERATIONS'] = PARALLEL_BUCKET_OPERATIONS # From app.config
 
+# Initialize SocketIO if available
+if socketio_available:
+    socketio = SocketIO(app, 
+                       cors_allowed_origins="*", 
+                       async_mode='threading',
+                       ping_timeout=60,
+                       ping_interval=25,
+                       manage_session=False,  # Don't let Socket.IO manage sessions
+                       logger=True,           # Enable Socket.IO internal logging
+                       engineio_logger=True)  # Enable Engine.IO logging
+    logger.info("WebSocket support enabled using Flask-SocketIO")
+else:
+    socketio = None
+    logger.warning("WebSocket support disabled (flask_socketio not installed)")
+
 # Initialize database (db and db_path are now global)
 db_path = DATABASE_URI.replace('sqlite:///', '') # Define db_path globally
 db = Database(db_path) # Define db globally
@@ -109,9 +134,13 @@ snapshot_progress_global = {
     "active": False, "overall_percentage": 0, "status_message": "Not started",
     "error_message": None, "current_snapshot_type": None, "start_time": None,
     "end_time": None, "total_buckets": 0, "buckets_processed_count": 0,
-    "current_processing_bucket_name": None, "buckets": []
+    "current_processing_bucket_name": None, "buckets": [],
+    "last_updated": None, "active_bucket": None
 }
 snapshot_progress_lock = Lock()
+
+# WebSocket channels for broadcasting updates
+ws_clients = set()
 
 # Global client and scheduler variables
 backblaze_client = None # For the global native B2 client, if needed outside snapshots
@@ -121,107 +150,163 @@ snapshot_thread = None # Global reference for the currently running snapshot_wor
 
 # Callback for detailed progress
 def update_snapshot_detailed_progress(event_type, data):
+    """Update the detailed progress state of the snapshot process."""
     with snapshot_progress_lock:
-        now_iso = datetime.utcnow().isoformat()
-        # current_app.logger.debug(f"Snapshot progress update: {event_type}, Data: {data}")
-
-        if event_type == "SNAPSHOT_SETUP":
-            snapshot_progress_global['total_buckets'] = data.get('total_buckets', 0)
-            snapshot_progress_global['buckets'] = [
-                {'name': name, 'status': 'pending', 'objects_processed': 0, 
-                 'last_object_key': None, 'error': None, 'start_time': None, 'end_time': None}
-                for name in data.get('bucket_names', [])
-            ]
-            if snapshot_progress_global.get('active', False):
-                 snapshot_progress_global['status_message'] = "Preparing to process buckets..." if snapshot_progress_global['total_buckets'] > 0 else "No buckets found to process."
-
-        elif event_type == "BUCKET_START":
-            bucket_name = data.get('bucket_name')
-            if not bucket_name: return
-            found = False
-            for bucket in snapshot_progress_global.get('buckets', []):
-                if bucket['name'] == bucket_name:
-                    bucket.update({'status': 'processing', 'start_time': now_iso, 'objects_processed': 0, 'last_object_key': None, 'error': None})
-                    snapshot_progress_global['current_processing_bucket_name'] = bucket_name
-                    found = True
-                    break
-            if not found:
-                # current_app.logger.warning(f"BUCKET_START for unknown or new bucket: {bucket_name}. Adding to list.")
-                new_bucket_entry = {'name': bucket_name, 'status': 'processing', 'objects_processed': 0, 
-                                    'last_object_key': None, 'error': None, 'start_time': now_iso, 'end_time': None}
-                snapshot_progress_global.setdefault('buckets', []).append(new_bucket_entry)
-                snapshot_progress_global['total_buckets'] = len(snapshot_progress_global['buckets'])
-                snapshot_progress_global['current_processing_bucket_name'] = bucket_name
-
-        elif event_type == "BUCKET_PROGRESS":
-            bucket_name = data.get('bucket_name')
-            if not bucket_name: return
-            for bucket in snapshot_progress_global.get('buckets', []):
-                if bucket['name'] == bucket_name:
-                    bucket['objects_processed'] = data.get('objects_processed_in_bucket', bucket.get('objects_processed', 0))
-                    bucket['last_object_key'] = data.get('last_object_key', bucket.get('last_object_key'))
-                    if bucket.get('status') == 'pending': 
-                        bucket['status'] = 'processing'
-                        if not bucket.get('start_time'): bucket['start_time'] = now_iso
-                    break
-
-        elif event_type == "BUCKET_COMPLETE":
-            bucket_name = data.get('bucket_name')
-            if not bucket_name: return
-            processed_this_bucket_flag = False
-            for bucket in snapshot_progress_global.get('buckets', []):
-                if bucket['name'] == bucket_name:
-                    if bucket.get('status') not in ['completed', 'error']:
-                        snapshot_progress_global['buckets_processed_count'] = snapshot_progress_global.get('buckets_processed_count', 0) + 1
-                        processed_this_bucket_flag = True
-                    bucket.update({'status': 'completed', 'end_time': now_iso, 'error': None})
-                    if 'objects_processed_in_bucket' in data:
-                        bucket['objects_processed'] = data['objects_processed_in_bucket']
-                    break
-            if processed_this_bucket_flag and snapshot_progress_global.get('current_processing_bucket_name') == bucket_name:
-                snapshot_progress_global['current_processing_bucket_name'] = None
-
-        elif event_type == "BUCKET_ERROR":
-            bucket_name = data.get('bucket_name')
-            if not bucket_name: return
-            errored_this_bucket_flag = False
-            for bucket in snapshot_progress_global.get('buckets', []):
-                if bucket['name'] == bucket_name:
-                    if bucket.get('status') not in ['completed', 'error']:
-                         snapshot_progress_global['buckets_processed_count'] = snapshot_progress_global.get('buckets_processed_count', 0) + 1
-                         errored_this_bucket_flag = True
-                    bucket.update({
-                        'status': 'error', 
-                        'error': data.get('error', 'Unknown error'), 
-                        'end_time': now_iso
-                    })
-                    if 'objects_processed_in_bucket' in data: 
-                        bucket['objects_processed'] = data['objects_processed_in_bucket']
-                    break
-            if errored_this_bucket_flag and snapshot_progress_global.get('current_processing_bucket_name') == bucket_name:
-                snapshot_progress_global['current_processing_bucket_name'] = None
+        # Always update the timestamp for last activity
+        snapshot_progress_global["last_updated"] = datetime.utcnow().isoformat()
         
-        if snapshot_progress_global.get('active', False):
-            total_buckets = snapshot_progress_global.get('total_buckets', 0)
-            buckets_processed_count = snapshot_progress_global.get('buckets_processed_count', 0)
-            snapshot_progress_global['overall_percentage'] = int((buckets_processed_count / total_buckets) * 100) if total_buckets > 0 else 0
+        if event_type == "SNAPSHOT_SETUP":
+            snapshot_progress_global["total_buckets"] = data.get("total_buckets", 0)
+            snapshot_progress_global["buckets"] = []
             
-            current_processing_bucket_name = snapshot_progress_global.get('current_processing_bucket_name')
-            if buckets_processed_count == total_buckets and total_buckets > 0:
-                pass 
-            elif current_processing_bucket_name:
-                current_bucket_info = next((b for b in snapshot_progress_global.get('buckets', []) if b['name'] == current_processing_bucket_name), None)
-                obj_count_str = f", obj: {current_bucket_info['objects_processed']}" if current_bucket_info and 'objects_processed' in current_bucket_info else ""
-                snapshot_progress_global['status_message'] = f"Processing: {current_processing_bucket_name}{obj_count_str} ({buckets_processed_count}/{total_buckets} buckets)"
-            elif total_buckets > 0 : 
-                snapshot_progress_global['status_message'] = f"Processed {buckets_processed_count}/{total_buckets} buckets. Waiting for next..."
-            elif not snapshot_progress_global.get('buckets'): 
-                snapshot_progress_global['status_message'] = "Listing buckets..."
-            elif not snapshot_progress_global.get('status_message') and snapshot_progress_global.get('active', False):
-                 snapshot_progress_global['status_message'] = "Snapshot in progress..."
+            # Initialize each bucket in our progress tracking
+            for bucket_name in data.get("bucket_names", []):
+                snapshot_progress_global["buckets"].append({
+                    "bucket_name": bucket_name,
+                    "status": "pending",
+                    "objects_processed_in_bucket": 0,
+                    "last_object_key": None,
+                    "error": None,
+                    "pagination_info": {
+                        "current_page": 0,
+                        "total_pages": 0,
+                        "files_processed": 0
+                    }
+                })
+                
+        elif event_type == "BUCKET_START":
+            bucket_name = data.get("bucket_name")
+            snapshot_progress_global["current_processing_bucket_name"] = bucket_name
+            
+            # Find and update the bucket status
+            for bucket in snapshot_progress_global.get("buckets", []):
+                if bucket["bucket_name"] == bucket_name:
+                    bucket["status"] = "processing"
+                    bucket["start_time"] = datetime.utcnow().isoformat()
+                    break
+                    
+        elif event_type == "BUCKET_PROGRESS":
+            bucket_name = data.get("bucket_name")
+            objects_processed = data.get("objects_processed_in_bucket", 0)
+            last_object_key = data.get("last_object_key", "N/A")
+            pagination_info = data.get("pagination_info", {})
+            
+            # Find and update the bucket progress
+            for bucket in snapshot_progress_global.get("buckets", []):
+                if bucket["bucket_name"] == bucket_name:
+                    bucket["status"] = "processing"
+                    bucket["objects_processed_in_bucket"] = objects_processed
+                    bucket["last_object_key"] = last_object_key
+                    
+                    # Update pagination info if available
+                    if pagination_info:
+                        bucket["pagination_info"] = {
+                            "current_page": pagination_info.get("current_page", 0),
+                            "total_pages": pagination_info.get("total_pages", 0),
+                            "files_processed": pagination_info.get("files_processed", 0)
+                        }
+                    
+                    # Set the active bucket for the UI
+                    snapshot_progress_global["active_bucket"] = {
+                        "bucket_name": bucket_name,
+                        "objects_processed_in_bucket": objects_processed,
+                        "last_object_key": last_object_key,
+                        "pagination_info": pagination_info
+                    }
+                    break
+                
+        elif event_type == "BUCKET_COMPLETE":
+            bucket_name = data.get("bucket_name")
+            objects_processed = data.get("objects_processed_in_bucket", 0)
+            pagination_info = data.get("pagination_info", {})
+            
+            # Find and update the bucket as completed
+            for bucket in snapshot_progress_global.get("buckets", []):
+                if bucket["bucket_name"] == bucket_name:
+                    bucket["status"] = "completed"
+                    bucket["objects_processed_in_bucket"] = objects_processed
+                    bucket["end_time"] = datetime.utcnow().isoformat()
+                    
+                    # Update final pagination info
+                    if pagination_info:
+                        bucket["pagination_info"] = {
+                            "current_page": pagination_info.get("current_page", 0),
+                            "total_pages": pagination_info.get("total_pages", 0),
+                            "files_processed": pagination_info.get("files_processed", 0)
+                        }
+                    
+                    break
+            
+            # Update the count of processed buckets
+            snapshot_progress_global["buckets_processed_count"] = sum(
+                1 for b in snapshot_progress_global.get("buckets", []) 
+                if b.get("status") in ["completed", "error"]
+            )
+            
+            # Update the overall percentage
+            if snapshot_progress_global["total_buckets"] > 0:
+                snapshot_progress_global["overall_percentage"] = int(
+                    (snapshot_progress_global["buckets_processed_count"] / snapshot_progress_global["total_buckets"]) * 100
+                )
+                
+            # Clear the active bucket reference if we completed the current one
+            if snapshot_progress_global.get("active_bucket", {}).get("bucket_name") == bucket_name:
+                snapshot_progress_global["active_bucket"] = None
+                
+        elif event_type == "BUCKET_ERROR":
+            bucket_name = data.get("bucket_name")
+            error_message = data.get("error", "Unknown error")
+            
+            # Find and update the bucket with error
+            for bucket in snapshot_progress_global.get("buckets", []):
+                if bucket["bucket_name"] == bucket_name:
+                    bucket["status"] = "error"
+                    bucket["error"] = error_message
+                    bucket["end_time"] = datetime.utcnow().isoformat()
+                    break
+                
+            # Update processed count (errors also count as "processed")
+            snapshot_progress_global["buckets_processed_count"] = sum(
+                1 for b in snapshot_progress_global.get("buckets", []) 
+                if b.get("status") in ["completed", "error"]
+            )
+            
+            # Update overall percentage
+            if snapshot_progress_global["total_buckets"] > 0:
+                snapshot_progress_global["overall_percentage"] = int(
+                    (snapshot_progress_global["buckets_processed_count"] / snapshot_progress_global["total_buckets"]) * 100
+                )
+                
+            # Clear active bucket if it was the one with error
+            if snapshot_progress_global.get("active_bucket", {}).get("bucket_name") == bucket_name:
+                snapshot_progress_global["active_bucket"] = None
+                
+        elif event_type == "SNAPSHOT_COMPLETE":
+            snapshot_progress_global["status_message"] = "Snapshot completed successfully"
+            snapshot_progress_global["overall_percentage"] = 100
+            snapshot_progress_global["end_time"] = datetime.utcnow().isoformat()
+            snapshot_progress_global["active"] = False
+            snapshot_progress_global["active_bucket"] = None
+            snapshot_progress_global["snapshot_id"] = data.get("snapshot_id")
+            
+        elif event_type == "SNAPSHOT_ERROR":
+            snapshot_progress_global["status_message"] = f"Snapshot failed: {data.get('error', 'Unknown error')}"
+            snapshot_progress_global["error_message"] = data.get("error", "Unknown error")
+            snapshot_progress_global["end_time"] = datetime.utcnow().isoformat()
+            snapshot_progress_global["active"] = False
+            snapshot_progress_global["active_bucket"] = None
 
-        if not snapshot_progress_global.get('active', False): # If snapshot ended (completed/failed)
-            snapshot_progress_global['overall_percentage'] = 100
+        # Broadcast progress update via WebSocket if available
+        if socketio:
+            # Create a copy of the progress data to avoid race conditions
+            progress_data = copy.deepcopy(snapshot_progress_global)
+            
+            # Log a condensed version of what we're emitting
+            bucket_count = len(progress_data.get("buckets", []))
+            active_bucket = progress_data.get("current_processing_bucket_name", "none")
+            logger.info(f"Emitting snapshot_progress_update: {progress_data.get('overall_percentage')}% complete, {progress_data.get('buckets_processed_count')}/{progress_data.get('total_buckets')} buckets, active: {active_bucket}")
+            
+            socketio.emit('snapshot_progress_update', progress_data, namespace='/ws')
 
 
 def initialize_backblaze_client(force_new_auth=False):
@@ -263,9 +348,9 @@ def initialize_backblaze_client(force_new_auth=False):
         backblaze_client = None
         return False
 
-def snapshot_worker(app_context, snapshot_type, snapshot_name, api_choice):
+def snapshot_worker(app_context, snapshot_type, snapshot_name, api_choice, clear_cache=False):
     with app_context.app_context(): # Use app_context
-        current_app.logger.info(f"Snapshot worker started for type: {snapshot_type}, name: {snapshot_name}, API: {api_choice}")
+        current_app.logger.info(f"Snapshot worker started for type: {snapshot_type}, name: {snapshot_name}, API: {api_choice}, Clear Cache: {clear_cache}")
         
         client_instance = None 
         account_info = None 
@@ -287,6 +372,28 @@ def snapshot_worker(app_context, snapshot_type, snapshot_name, api_choice):
                 return
             try:
                 client_instance = NativeBackblazeClient(parallel_operations=parallel_operations)
+                
+                # Clear cache if requested
+                if clear_cache:
+                    if hasattr(client_instance, 'clear_auth_cache'):
+                        current_app.logger.info("Clearing B2 authentication cache as requested")
+                        client_instance.clear_auth_cache()
+                    
+                    # Also clear the object metadata cache if directory exists
+                    if hasattr(client_instance, 'object_cache_dir_abs') and client_instance.object_cache_dir_abs:
+                        try:
+                            import shutil
+                            if os.path.exists(client_instance.object_cache_dir_abs):
+                                current_app.logger.info(f"Clearing B2 object metadata cache at {client_instance.object_cache_dir_abs}")
+                                for file in os.listdir(client_instance.object_cache_dir_abs):
+                                    if file.startswith('b2_bucket_usage_'):
+                                        file_path = os.path.join(client_instance.object_cache_dir_abs, file)
+                                        os.remove(file_path)
+                                        current_app.logger.debug(f"Removed cache file: {file_path}")
+                        except Exception as cache_e:
+                            current_app.logger.warning(f"Error clearing B2 object cache: {cache_e}")
+                
+                # Get account info
                 if hasattr(client_instance, 'get_account_info'):
                      account_info = client_instance.get_account_info()
                      if account_info: # Log account ID if available
@@ -347,6 +454,27 @@ def snapshot_worker(app_context, snapshot_type, snapshot_name, api_choice):
                     region_name=s3_creds.get('region_name'), # Optional
                     parallel_operations=parallel_operations
                 )
+                
+                # Clear cache if requested
+                if clear_cache:
+                    # Clear auth cache if the method exists
+                    if hasattr(client_instance, 'clear_auth_cache'):
+                        current_app.logger.info("Clearing S3 authentication cache as requested")
+                        client_instance.clear_auth_cache()
+                    
+                    # Also clear object metadata cache if available
+                    if hasattr(client_instance, 'object_cache_dir_abs') and client_instance.object_cache_dir_abs:
+                        try:
+                            if os.path.exists(client_instance.object_cache_dir_abs):
+                                current_app.logger.info(f"Clearing S3 object metadata cache at {client_instance.object_cache_dir_abs}")
+                                for file in os.listdir(client_instance.object_cache_dir_abs):
+                                    if file.startswith('s3_bucket_usage_'):
+                                        file_path = os.path.join(client_instance.object_cache_dir_abs, file)
+                                        os.remove(file_path)
+                                        current_app.logger.debug(f"Removed S3 cache file: {file_path}")
+                        except Exception as cache_e:
+                            current_app.logger.warning(f"Error clearing S3 object cache: {cache_e}")
+                
                 current_app.logger.info(f"S3BackblazeClient initialized with Key ID ending ...{s3_creds['aws_access_key_id'][-4:] if len(s3_creds['aws_access_key_id']) > 3 else s3_creds['aws_access_key_id']} and endpoint {s3_creds['endpoint_url']}.")
             except Exception as e:
                 current_app.logger.error(f"Failed to initialize S3BackblazeClient: {e}", exc_info=True)
@@ -362,6 +490,9 @@ def snapshot_worker(app_context, snapshot_type, snapshot_name, api_choice):
                 })
             return
 
+        # Store the client instance in the app context so it can be accessed for dynamic updates
+        current_app.active_snapshot_client = client_instance
+
         with snapshot_progress_lock:
             snapshot_progress_global.clear() 
             snapshot_progress_global.update({
@@ -369,7 +500,8 @@ def snapshot_worker(app_context, snapshot_type, snapshot_name, api_choice):
                 "error_message": None, "current_snapshot_type": snapshot_type,
                 "start_time": datetime.utcnow().isoformat(), "end_time": None,
                 "total_buckets": 0, "buckets_processed_count": 0,
-                "current_processing_bucket_name": None, "buckets": [] 
+                "current_processing_bucket_name": None, "buckets": [],
+                "parallel_operations": parallel_operations
             })
         
         try:
@@ -507,6 +639,10 @@ def new_snapshot():
 
     try:
         logger.info("Manual snapshot creation initiated by user.")
+        
+        # Check if clear_cache is set
+        clear_cache = request.form.get('clear_cache') == 'true'
+        
         with snapshot_progress_lock:
             if snapshot_progress_global.get("active", False) or (snapshot_thread and snapshot_thread.is_alive()):
                 flash('A snapshot is already in progress. Please wait for it to complete.', 'warning')
@@ -525,13 +661,16 @@ def new_snapshot():
         snapshot_name = f"Manual Snapshot - {datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
         app_context_obj = current_app._get_current_object()
 
-        logger.info(f"Starting manual snapshot thread: Name='{snapshot_name}', API='{api_choice}'")
-        thread = threading.Thread(target=snapshot_worker, args=(app_context_obj, "manual", snapshot_name, api_choice))
+        logger.info(f"Starting manual snapshot thread: Name='{snapshot_name}', API='{api_choice}', Clear Cache={clear_cache}")
+        thread = threading.Thread(target=snapshot_worker, args=(app_context_obj, "manual", snapshot_name, api_choice, clear_cache))
         thread.daemon = True 
         thread.start()
         snapshot_thread = thread # Store reference to the running thread
 
-        flash(f'New manual snapshot process initiated ({api_choice.upper()}). View progress on the status page.', 'success')
+        if clear_cache:
+            flash(f'New manual snapshot with CLEARED CACHE initiated ({api_choice.upper()}). View progress on the status page.', 'success')
+        else:
+            flash(f'New manual snapshot process initiated ({api_choice.upper()}). View progress on the status page.', 'success')
         return redirect(url_for('snapshot_status_detail'))
         
     except Exception as e:
@@ -548,7 +687,77 @@ def new_snapshot():
 # @login_required # Public progress endpoint might be fine, or add login if sensitive
 def get_snapshot_progress_route():
     with snapshot_progress_lock:
-        return jsonify(snapshot_progress_global)
+        # Make a copy to prevent race conditions
+        progress_data = copy.deepcopy(snapshot_progress_global)
+        
+        # Ensure minimum data structure for clients
+        if 'active' not in progress_data:
+            progress_data['active'] = False
+        if 'overall_percentage' not in progress_data:
+            progress_data['overall_percentage'] = 0
+        if 'status_message' not in progress_data:
+            progress_data['status_message'] = 'No active snapshot'
+        if 'buckets' not in progress_data:
+            progress_data['buckets'] = []
+        if 'buckets_processed_count' not in progress_data:
+            progress_data['buckets_processed_count'] = 0
+        if 'total_buckets' not in progress_data:
+            progress_data['total_buckets'] = 0
+            
+        logger.debug(f"Returning snapshot progress data with {len(progress_data.get('buckets', []))} buckets")
+        return jsonify(progress_data)
+
+@app.route('/snapshot/kill', methods=['POST'])
+@login_required
+def kill_snapshot_route():
+    """API endpoint to kill a running snapshot process"""
+    global snapshot_thread, stop_snapshot_thread
+    
+    try:
+        # Set the stop flag to signal the worker thread to exit
+        stop_snapshot_thread = True
+        
+        # Update the snapshot progress to indicate it's being terminated
+        with snapshot_progress_lock:
+            snapshot_progress_global.update({
+                "active": False,
+                "status_message": "Snapshot terminated by user",
+                "error_message": "Snapshot process was manually killed",
+                "end_time": datetime.utcnow().isoformat()
+            })
+            
+        # If socket.io is available, emit an update
+        if socketio:
+            socketio.emit('snapshot_progress_update', snapshot_progress_global, namespace='/ws')
+        
+        # Check if thread exists and is alive
+        if snapshot_thread and snapshot_thread.is_alive():
+            logger.info("Attempting to join snapshot thread...")
+            # We don't want to block indefinitely, so use a timeout
+            snapshot_thread.join(timeout=5)
+            
+            # Check if it's still alive after timeout
+            if snapshot_thread.is_alive():
+                logger.warning("Snapshot thread did not stop gracefully within timeout.")
+                # Note: In Python we can't forcefully terminate a thread
+                # The thread should check the stop_snapshot_thread flag regularly
+            else:
+                logger.info("Snapshot thread terminated successfully.")
+                snapshot_thread = None
+        else:
+            logger.info("No active snapshot thread to terminate.")
+        
+        return jsonify({
+            "success": True,
+            "message": "Snapshot process termination signal sent."
+        })
+        
+    except Exception as e:
+        logger.error(f"Error killing snapshot: {str(e)}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "message": f"Error: {str(e)}"
+        }), 500
 
 @app.route('/snapshot/status')
 @login_required
@@ -702,8 +911,17 @@ def run_app():
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         # initialize_backblaze_client() # Called by before_first_request_setup
         # start_scheduler() # Scheduler start disabled for now
-        logger.info(f"Starting Flask app on {HOST}:{PORT}")
-        app.run(host=HOST, port=PORT)
+        
+        if socketio:
+            logger.info(f"Starting Flask app with WebSocket support on {HOST}:{PORT}")
+            # Set debug=False for production to avoid socket reconnection issues
+            socketio.run(app, host=HOST, port=PORT, debug=DEBUG, 
+                        allow_unsafe_werkzeug=True,
+                        log_output=True,
+                        cors_allowed_origins="*")
+        else:
+            logger.info(f"Starting Flask app (without WebSocket support) on {HOST}:{PORT}")
+            app.run(host=HOST, port=PORT, debug=DEBUG)
     except Exception as e:
         logger.error(f"Error starting application: {str(e)}", exc_info=True)
     finally:
@@ -816,21 +1034,109 @@ def save_performance_settings():
     if parallel_ops_str:
         try:
             parallel_ops_int = int(parallel_ops_str)
-            if not (1 <= parallel_ops_int <= 32): # Example validation
-                flash('Parallel operations must be between 1 and 32.', 'danger')
+            if not (1 <= parallel_ops_int <= 100): # Increased max from 32 to 100
+                flash('Parallel operations must be between 1 and 100.', 'danger')
             else:
                 with open(settings_file_path, 'w') as f:
                     json.dump({'parallel_operations': parallel_ops_int}, f)
                 current_app.config['PARALLEL_BUCKET_OPERATIONS'] = parallel_ops_int
-                flash('Performance settings saved. Client will use new settings on next operation or re-initialization.', 'success')
-                # Optionally re-initialize global client if it should pick this up immediately
-                # initialize_backblaze_client(force_new_auth=True) # If global client uses this
+                
+                # Update active client's parallel_operations if a snapshot is running
+                global snapshot_thread
+                if snapshot_thread and snapshot_thread.is_alive() and hasattr(current_app, 'active_snapshot_client'):
+                    active_client = getattr(current_app, 'active_snapshot_client', None)
+                    if active_client and hasattr(active_client, 'parallel_operations'):
+                        old_value = active_client.parallel_operations
+                        active_client.parallel_operations = parallel_ops_int
+                        logger.info(f"Updated active snapshot client's parallel operations from {old_value} to {parallel_ops_int}")
+                        flash(f'Performance settings saved and applied to the active snapshot process.', 'success')
+                    else:
+                        flash('Performance settings saved. Will apply to future snapshot operations.', 'success')
+                else:
+                    flash('Performance settings saved. Will apply to future snapshot operations.', 'success')
         except (IOError, ValueError) as e:
             logger.error(f"Error saving performance settings: {e}")
             flash(f'Error saving performance settings: {e}', 'danger')
     else:
         flash('Parallel operations value not provided.', 'warning')
     return redirect(url_for('api_settings'))
+
+@app.route('/settings/api/parallel_operations', methods=['POST'])
+@login_required
+def update_parallel_operations():
+    """API endpoint to update parallel operations in real-time"""
+    try:
+        data = request.get_json()
+        if not data or 'parallel_operations' not in data:
+            return jsonify({
+                'success': False,
+                'message': 'Missing parallel_operations parameter'
+            }), 400
+            
+        parallel_ops = int(data['parallel_operations'])
+        if not (1 <= parallel_ops <= 100):
+            return jsonify({
+                'success': False,
+                'message': 'Parallel operations must be between 1 and 100'
+            }), 400
+        
+        # Update the application config
+        current_app.config['PARALLEL_BUCKET_OPERATIONS'] = parallel_ops
+        
+        # Also save to settings file for persistence
+        settings_file_path = os.path.join(app.instance_path, 'performance_settings.json')
+        os.makedirs(app.instance_path, exist_ok=True)
+        with open(settings_file_path, 'w') as f:
+            json.dump({'parallel_operations': parallel_ops}, f)
+        
+        # Update active client's parallel_operations if a snapshot is running
+        global snapshot_thread
+        if snapshot_thread and snapshot_thread.is_alive():
+            active_client = getattr(current_app, 'active_snapshot_client', None)
+            if active_client and hasattr(active_client, 'parallel_operations'):
+                old_value = active_client.parallel_operations
+                active_client.parallel_operations = parallel_ops
+                logger.info(f"Dynamically updated active snapshot client's parallel operations from {old_value} to {parallel_ops}")
+                
+                # Update the snapshot progress global with this information
+                with snapshot_progress_lock:
+                    snapshot_progress_global["parallel_operations"] = parallel_ops
+                    snapshot_progress_global["status_message"] = f"Processing buckets (parallel operations updated to {parallel_ops})"
+                    
+                    # Broadcast update via WebSocket if available
+                    if socketio:
+                        progress_data = copy.deepcopy(snapshot_progress_global)
+                        socketio.emit('snapshot_progress_update', progress_data, namespace='/ws')
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'Parallel operations updated from {old_value} to {parallel_ops} and applied to active snapshot',
+                    'applied_to_active_snapshot': True
+                })
+            else:
+                return jsonify({
+                    'success': True,
+                    'message': 'Parallel operations updated but could not be applied to active snapshot',
+                    'applied_to_active_snapshot': False
+                })
+        else:
+            return jsonify({
+                'success': True,
+                'message': 'Parallel operations updated (no active snapshot)',
+                'applied_to_active_snapshot': False
+            })
+            
+    except ValueError as e:
+        return jsonify({
+            'success': False,
+            'message': f'Invalid value: {str(e)}'
+        }), 400
+    except Exception as e:
+        logger.error(f"Error updating parallel operations: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'Error: {str(e)}'
+        }), 500
 
 @app.route('/settings/api/delete', methods=['POST']) 
 @login_required
@@ -1013,6 +1319,44 @@ def compare_snapshots():
         flash(f"Error comparing snapshots: {e}", "danger")
         return redirect(url_for('index'))
 
+# WebSocket routes
+if socketio_available:
+    @socketio.on('connect', namespace='/ws')
+    def ws_connect():
+        logger.info(f"WebSocket client connected: {request.sid}")
+        emit('connection_response', {'status': 'connected', 'sid': request.sid})
+        
+        # Send initial snapshot progress state
+        with snapshot_progress_lock:
+            progress_data = copy.deepcopy(snapshot_progress_global)
+            emit('snapshot_progress_update', progress_data)
+    
+    @socketio.on('disconnect', namespace='/ws')
+    def ws_disconnect():
+        logger.info(f"WebSocket client disconnected: {request.sid}")
+
+    @socketio.on('ping_server', namespace='/ws')
+    def handle_ping():
+        """Handle manual ping from client to keep the connection alive"""
+        logger.debug(f"Received ping from client {request.sid}, sending pong")
+        emit('pong_response', {'timestamp': datetime.now().isoformat(), 'sid': request.sid})
+        
+        # Send current status as well to ensure client has latest data
+        with snapshot_progress_lock:
+            progress_data = copy.deepcopy(snapshot_progress_global)
+            emit('snapshot_progress_update', progress_data)
+    
+    # Add explicit handler for the built-in Engine.IO ping event
+    @socketio.on('ping', namespace='/ws')
+    def handle_engineio_ping():
+        logger.debug(f"Received Engine.IO ping from {request.sid}")
+        # No need to respond, Engine.IO handles the pong automatically
+    
+    # Add error handler
+    @socketio.on_error(namespace='/ws')
+    def handle_error(e):
+        logger.error(f"SocketIO error occurred: {str(e)}")
+        # Do not disconnect, let the client reconnect if needed
 
 if __name__ == '__main__':
     run_app()

@@ -66,8 +66,11 @@
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <div class="mb-3">
                             <label for="parallelOperations" class="form-label">Parallel Bucket Processing</label>
-                            <input type="number" class="form-control" id="parallelOperations" name="parallel_operations" value="{{ parallel_operations | default(8) }}" min="1" max="32">
-                            <div class="form-text">Number of buckets to process in parallel during a snapshot (Default: 8). Higher values may speed up snapshots but increase resource usage.</div>
+                            <input type="number" class="form-control" id="parallelOperations" name="parallel_operations" value="{{ parallel_operations | default(32) }}" min="1" max="100">
+                            <div class="form-text">
+                                Number of buckets to process in parallel during a snapshot (Default: 32). Higher values may speed up snapshots but increase resource usage.
+                                <span class="text-success fw-bold">Changes are applied immediately, even to running snapshots.</span>
+                            </div>
                         </div>
                         <button type="submit" class="btn btn-primary">Save Settings</button>
                     </form>
@@ -84,6 +87,7 @@
                     <p><strong>API Credentials:</strong> Your Backblaze B2 Application Key ID and Application Key are required to access your account data. You can create these from your Backblaze account under "App Keys".</p>
                     <p><strong>Security:</strong> If you set credentials via environment variables, they will take precedence over credentials saved here. For enhanced security, consider using environment variables in production environments.</p>
                     <p><strong>Parallel Processing:</strong> Adjusting the number of parallel bucket processing operations can impact snapshot duration and system load. Monitor performance when changing this value.</p>
+                    <p><strong>Dynamic Updates:</strong> You can change the parallel processing setting during an active snapshot to optimize performance in real-time. If your snapshot is processing slowly, try increasing this value to speed it up.</p>
                 </div>
             </div>
 
