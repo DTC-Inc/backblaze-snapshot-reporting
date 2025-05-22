@@ -24,7 +24,7 @@ var/
 .env
 .env.*
 stack.env
-stack.env.*
+!stack.env.example
 .venv
 env/
 venv/

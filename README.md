@@ -75,7 +75,7 @@ By default, the application uses Docker local volumes for data storage. This is 
 In your `stack.env` file:
 ```
 USE_DOCKER_VOLUMES=true
-DATA_VOLUME_NAME=bbssr_backblaze_data  # Optional, defaults to ${STACK_NAME}_backblaze_data
+DATA_VOLUME_NAME=bbssr_data  # Optional, defaults to bbssr_data
 ```
 
 Start the application with:
@@ -89,7 +89,7 @@ For production deployments, it's recommended to use external volumes that you cr
 
 1. Create the external volume:
    ```
-   docker volume create bbssr_backblaze_data
+   docker volume create bbssr_data
    ```
 
 2. Start the application using the external volume configuration:
@@ -135,7 +135,7 @@ To use PostgreSQL instead of SQLite:
 
 If you're using external volumes for production, also create the PostgreSQL volume:
 ```
-docker volume create bbssr_postgres_data
+docker volume create bbssr_db
 ```
 
 ### Deploying with Portainer
@@ -151,7 +151,7 @@ The docker-compose configuration is compatible with Portainer. To deploy:
 
 For persistent volumes in Portainer:
 1. First create the volume(s) in Portainer's Volumes section
-2. Make sure to name them exactly as configured (e.g., bbssr_backblaze_data)
+2. Make sure to name them exactly as configured (e.g., bbssr_data)
 3. In the advanced deployment options in Portainer, check "External volumes" 
 
 ### Cloudflare Tunnel Integration (Optional)
@@ -230,7 +230,7 @@ docker compose up -d
 #### For Docker Volumes
 
 ```
-docker run --rm -v ${STACK_NAME}_backblaze_data:/data -v $(pwd):/backup alpine tar -czf /backup/backblaze_data.tar.gz /data
+docker run --rm -v bbssr_data:/data -v $(pwd):/backup alpine tar -czf /backup/data.tar.gz /data
 ```
 
 #### For Local Storage
@@ -269,6 +269,9 @@ docker compose restart web
 |---------------------|-------------|---------|
 | STACK_NAME | Prefix for container names and volumes | bbssr |
 | APP_PORT | Port to expose the web application | 5000 |
+| PID | Process ID for the container user | 1000 |
+| GID | Group ID for the container user | 1000 |
+| DATA_PATH | Base path for local data storage | ./data |
 | USE_POSTGRES | Use PostgreSQL instead of SQLite | false |
 | POSTGRES_USER | PostgreSQL username | bbssr_user |
 | POSTGRES_PASSWORD | PostgreSQL password | - |

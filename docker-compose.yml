@@ -21,8 +21,8 @@ services:
     ports:
       - "${APP_PORT:-5000}:5000"
     volumes:
-      - ${STACK_NAME:-bbssr}_backblaze_data:/data
-    user: "appuser"
+      - bbssr_data:/data
+    user: "${PID:-1000}:${GID:-1000}"
     restart: unless-stopped
     networks:
       - app_network
@@ -56,7 +56,7 @@ services:
     image: postgres:14-alpine
     restart: unless-stopped
     volumes:
-      - ${STACK_NAME:-bbssr}_postgres_data:/var/lib/postgresql/data
+      - bbssr_db:/var/lib/postgresql/data
     env_file:
       - stack.env
     networks:
@@ -72,5 +72,5 @@ services:
       replicas: ${USE_POSTGRES:-0}
 
 volumes:
-  ${STACK_NAME:-bbssr}_backblaze_data: {}
-  ${STACK_NAME:-bbssr}_postgres_data: {}
+  bbssr_data:
+  bbssr_db:

@@ -1,9 +1,15 @@
 version: '3.8'
 
 volumes:
-  ${STACK_NAME:-bbssr}_backblaze_data:
-    name: ${DATA_VOLUME_NAME:-${STACK_NAME:-bbssr}_backblaze_data}
-    # Not external, created locally
-  ${STACK_NAME:-bbssr}_postgres_data:
-    name: ${POSTGRES_VOLUME_NAME:-${STACK_NAME:-bbssr}_postgres_data}
-    # Not external, created locally 
+  bbssr_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-./data}/bbssr_data
+  bbssr_db:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-./data}/bbssr_db 

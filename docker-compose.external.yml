@@ -1,9 +1,9 @@
 version: '3.8'
 
 volumes:
-  ${STACK_NAME:-bbssr}_backblaze_data:
-    name: ${DATA_VOLUME_NAME:-${STACK_NAME:-bbssr}_backblaze_data}
+  bbssr_data:
+    name: ${DATA_VOLUME_NAME:-bbssr_data}
     external: true
-  ${STACK_NAME:-bbssr}_postgres_data:
-    name: ${POSTGRES_VOLUME_NAME:-${STACK_NAME:-bbssr}_postgres_data}
+  bbssr_db:
+    name: ${POSTGRES_VOLUME_NAME:-bbssr_db}
     external: true 

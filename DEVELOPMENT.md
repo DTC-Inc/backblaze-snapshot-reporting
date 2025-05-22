@@ -18,7 +18,7 @@ We maintain a consistent structure for our Docker deployment files:
 We follow these naming conventions for Docker resources:
 
 - **Stack Name**: All resources use the `bbssr` prefix by default (configurable via STACK_NAME)
-- **Volumes**: Named as `${STACK_NAME}_purpose` (e.g., bbssr_backblaze_data)
+- **Volumes**: Named as `${STACK_NAME}_purpose` (e.g., bbssr_data)
 - **Networks**: Named as `${STACK_NAME}_network_type` (e.g., bbssr_app_network)
 - **Services**: Container names follow `${STACK_NAME}_service` (e.g., bbssr_web)
 
@@ -70,10 +70,13 @@ All configuration is managed through environment variables in the stack.env file
 1. **Stack Configuration**
    - `STACK_NAME`: Prefix for all Docker resources (default: bbssr)
    - `COMPOSE_PROJECT_NAME`: Project name for Docker Compose (default: bbssr)
+   - `PID`: Process ID for the container user (default: 1000)
+   - `GID`: Group ID for the container user (default: 1000)
 
 2. **Storage Configuration**
    - `USE_DOCKER_VOLUMES`: Whether to use Docker volumes (true) or local paths (false)
-   - `DATA_VOLUME_NAME`: Name for the data volume (default: ${STACK_NAME}_backblaze_data)
+   - `DATA_PATH`: Base path for local data storage (default: ./data)
+   - `DATA_VOLUME_NAME`: Name for the data volume (default: bbssr_data)
 
 3. **Database Configuration**
    - `USE_POSTGRES`: Whether to use PostgreSQL (true) or SQLite (false)
@@ -138,7 +141,8 @@ When modifying Docker configuration:
    docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
    
    # Test external deployment
-   docker volume create bbssr_backblaze_data
+   docker volume create bbssr_data
+   docker volume create bbssr_db
    docker compose -f docker-compose.yml -f docker-compose.external.yml up -d
    ```
 
@@ -213,9 +217,8 @@ When ready to deploy to production:
 
 1. **Create external volumes**
    ```bash
-   docker volume create bbssr_backblaze_data
-   # If using PostgreSQL
-   docker volume create bbssr_postgres_data
+   docker volume create bbssr_data
+   docker volume create bbssr_db
    ```
 
 2. **Deploy with external volumes**
@@ -341,7 +344,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./scripts:/app/scripts
-      - backblaze_data:/data
+      - bbssr_data:/data
     environment:
       - DEBUG=True
       - FLASK_ENV=development
@@ -354,7 +357,7 @@ services:
       start_period: 40s
 
 volumes:
-  backblaze_data:
+  bbssr_data:
 ```
 
 Key features:
