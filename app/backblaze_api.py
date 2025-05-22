@@ -196,8 +196,8 @@ class BackblazeClient:
         except Exception as e:
             logger.warning(f"Error saving cache file {cache_key}: {e}")
 
-    def _make_api_request(self, endpoint, method='get', data=None, params=None, use_cache=True):
-        """Make an API request to the Backblaze B2 API with caching"""
+    def _make_api_request(self, endpoint, method='get', data=None, params=None, use_cache=True, retry_count=0, max_retries=3):
+        """Make an API request to the Backblaze B2 API with caching and retry logic"""
         # Check if auth token is expired (if it's more than 23 hours old)
         if (self.auth_timestamp and 
                 datetime.now() - self.auth_timestamp > timedelta(hours=23)):
@@ -242,8 +242,32 @@ class BackblazeClient:
                 logger.warning("Auth token expired, reauthorizing...")
                 if self.authorize():
                     return self._make_api_request(endpoint, method, data, params, use_cache)
+            elif e.response.status_code == 503 and endpoint == 'b2_list_file_versions':
+                # Service temporarily unavailable, try to get a different API endpoint
+                logger.warning(f"Service temporarily unavailable (503) for {url}. Clearing auth cache and reauthorizing...")
+                self.clear_auth_cache()
+                if self.authorize():
+                    logger.info(f"Reauthorized. New API URL: {self.api_url}")
+                    return self._make_api_request(endpoint, method, data, params, use_cache)
+            elif retry_count < max_retries and e.response.status_code in [429, 500, 502, 503, 504]:
+                # Retry for rate limits (429) and server errors (5xx) with exponential backoff
+                retry_count += 1
+                wait_time = 2 ** retry_count  # Exponential backoff: 2, 4, 8 seconds
+                logger.warning(f"Transient error {e.response.status_code} on attempt {retry_count}/{max_retries}. Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+                return self._make_api_request(endpoint, method, data, params, use_cache, retry_count, max_retries)
             
             logger.error(f"HTTP error in API request to {endpoint}: {str(e)}")
+            raise
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            # Retry connection and timeout errors with exponential backoff
+            if retry_count < max_retries:
+                retry_count += 1
+                wait_time = 2 ** retry_count
+                logger.warning(f"Connection error on attempt {retry_count}/{max_retries}. Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+                return self._make_api_request(endpoint, method, data, params, use_cache, retry_count, max_retries)
+            logger.error(f"Connection error in API request to {endpoint} after {max_retries} retries: {str(e)}")
             raise
         except requests.exceptions.RequestException as e:
             logger.error(f"Error in API request to {endpoint}: {str(e)}")
@@ -383,7 +407,7 @@ class BackblazeClient:
         return result
     
     def list_file_versions(self, bucket_id, start_filename=None, start_file_id=None, max_file_count=1000):
-        """List file versions in a bucket"""
+        """List file versions in a bucket with enhanced error handling"""
         data = {
             "bucketId": bucket_id,
             "maxFileCount": max_file_count
@@ -392,8 +416,30 @@ class BackblazeClient:
         if start_filename and start_file_id:
             data["startFileName"] = start_filename
             data["startFileId"] = start_file_id
+        
+        try:    
+            return self._make_api_request('b2_list_file_versions', 'post', data)
+        except requests.exceptions.HTTPError as e:
+            # Log detailed error information
+            status_code = getattr(e.response, 'status_code', None)
+            error_detail = None
             
-        return self._make_api_request('b2_list_file_versions', 'post', data)
+            try:
+                error_detail = e.response.json()
+            except:
+                try:
+                    error_detail = e.response.text
+                except:
+                    error_detail = str(e)
+                    
+            logger.error(f"B2 API Error listing file versions for bucket {bucket_id}: {status_code} - {error_detail}")
+            
+            # If this is the B2 native client and we're getting persistent errors,
+            # suggest trying S3 API instead as a more reliable alternative
+            logger.warning("Consider using the S3 API client (S3BackblazeClient) for more reliable access if available")
+            
+            # Re-raise the exception for the caller to handle
+            raise
     
     def get_bucket_files_info(self, bucket_id, limit=None):
         """Get detailed information about files in a bucket with optional limit"""
