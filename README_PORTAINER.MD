@@ -46,16 +46,11 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
      B2_APPLICATION_KEY=your_application_key
      PID=1000                    # User ID for file ownership (optional)
      GID=1000                    # Group ID for file ownership (optional)
-     USE_POSTGRES=1             # Set to 1 if you want to use PostgreSQL
-     POSTGRES_USER=bbssr_user   # Required if USE_POSTGRES=1
-     POSTGRES_PASSWORD=secure_password  # Required if USE_POSTGRES=1
-     POSTGRES_DB=bbssr_db       # Required if USE_POSTGRES=1
      ```
 
 4. Configure volumes:
-   - The following volumes will be created automatically:
+   - The following volume will be created automatically:
      - `bbssr_data`: For application data
-     - `bbssr_db`: For PostgreSQL data (if using PostgreSQL)
    - Permissions will be set automatically by the setup service
    - No manual volume creation is needed
 
@@ -67,10 +62,9 @@ This guide explains how to deploy the Backblaze Snapshot Reporting application u
 ## Service Architecture
 
 The stack includes the following services:
-1. `web`: The main application service
-2. `postgres`: Database service (if USE_POSTGRES=1)
-3. `cloudflared`: Cloudflare tunnel service (if configured)
-4. `setup`: Initializes volumes and permissions
+1. `web`: The main application service (SQLite database)
+2. `cloudflared`: Cloudflare tunnel service (if configured)
+3. `setup`: Initializes volumes and permissions
 
 ## Updating the Stack
 
@@ -103,7 +97,6 @@ To update the running stack:
 
 3. **Services Unhealthy**:
    - Check the service logs
-   - Verify database configuration (if using PostgreSQL)
    - Ensure Backblaze credentials are correct
 
 ### Getting Help

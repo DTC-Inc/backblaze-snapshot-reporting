@@ -4,11 +4,10 @@ services:
   setup:
     image: alpine
     command: >
-      sh -c "mkdir -p /data/bbssr_data /data/bbssr_db && 
+      sh -c "mkdir -p /data/bbssr_data && 
              chown -R ${PID:-1000}:${GID:-1000} /data"
     volumes:
       - bbssr_data:/data/bbssr_data
-      - bbssr_db:/data/bbssr_db
 
   web:
     image: bbssr
@@ -21,7 +20,6 @@ services:
     restart: unless-stopped
     networks:
       - app_network
-      - db_network
     env_file:
       - stack.env
     healthcheck:
@@ -30,29 +28,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    depends_on:
-      postgres:
-        condition: service_healthy
-        required: false
-
-  postgres:
-    image: postgres:14-alpine
-    container_name: ${STACK_NAME:-bbssr}_postgres
-    restart: unless-stopped
-    volumes:
-      - bbssr_db:/var/lib/postgresql/data
-    env_file:
-      - stack.env
-    networks:
-      - db_network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bbssr_user} -d ${POSTGRES_DB:-bbssr_db}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    deploy:
-      replicas: ${USE_POSTGRES:-0}
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -71,12 +46,7 @@ networks:
   app_network:
     name: ${STACK_NAME:-bbssr}_app_network
     driver: bridge
-  db_network:
-    name: ${STACK_NAME:-bbssr}_db_network
-    driver: bridge
 
 volumes:
   bbssr_data:
-    name: bbssr_data
-  bbssr_db:
-    name: bbssr_db 
+    name: bbssr_data 
