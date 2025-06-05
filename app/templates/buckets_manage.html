@@ -1,0 +1,363 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} – Backblaze Snapshot Reporting{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2>B2 Bucket Management</h2>
+        <button id="syncBucketsBtn" class="btn btn-primary btn-sm">
+            &#x21bb; Sync Buckets
+        </button>
+    </div>
+    <div class="small text-muted mb-2">Last sync:&nbsp;<span id="lastSyncTime">never</span></div>
+    <div id="syncStatus" class="mb-3"></div>
+
+    <!-- Bulk Actions bar (becomes visible when any bucket is selected) -->
+    <div id="bulkActions" class="alert alert-secondary py-2 px-3 mb-3 d-flex align-items-center" style="display:none;">
+        <span class="me-3 fw-bold">Selected:</span>
+        <button id="bulkConfigureBtn" class="btn btn-primary btn-sm me-2">Configure Notifications</button>
+        <button id="bulkEnableBtn" class="btn btn-success btn-sm me-2">Quick-Enable (default events)</button>
+        <button id="bulkDisableBtn" class="btn btn-danger btn-sm">Disable Notifications</button>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table table-bordered table-sm align-middle" id="bucketsTable">
+            <thead class="table-light">
+                <tr>
+                    <th style="width:35px;"><input type="checkbox" id="selectAllBuckets"></th>
+                    <th>Bucket Name</th>
+                    <th>Bucket ID</th>
+                    <th>Type</th>
+                    <th>Notifications</th>
+                    <th style="min-width: 200px;">Webhook Secret <i class="fas fa-eye-slash text-warning" title="Sensitive Information - Shown Obfuscated. Click eye to toggle."></i></th>
+                    <th style="width:120px;">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td colspan="6" class="text-center">Loading…</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Bulk Configuration Modal -->
+    <div class="modal fade" id="bulkConfigModal" tabindex="-1" aria-labelledby="bulkConfigModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="bulkConfigModalLabel">Configure Notifications for <span id="bulkCount"></span> buckets</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="form-check form-switch mb-3">
+                <input class="form-check-input" type="checkbox" id="bulkEnableSwitch" checked>
+                <label class="form-check-label" for="bulkEnableSwitch">Enable notifications</label>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Webhook URL to use</label>
+                <input type="text" id="bulkWebhookUrl" class="form-control" placeholder="https://example.com/api/webhooks/backblaze">
+                <div class="form-text">Leave blank to use default APP_PUBLIC_URL value configured in the server.</div>
+            </div>
+            <div id="bulkEventsSection">
+                <p class="mb-1"><strong>Select event types to monitor:</strong></p>
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="form-check"><input class="form-check-input bulk-event" type="checkbox" value="b2:ObjectCreated:*" id="bulk_ev_created_all"><label class="form-check-label small" for="bulk_ev_created_all">All Object Creations</label></div>
+                        <div class="form-check ms-3"><input class="form-check-input bulk-event" type="checkbox" value="b2:ObjectCreated:Upload" id="bulk_ev_created_up"><label class="form-check-label small" for="bulk_ev_created_up">Upload</label></div>
+                        <div class="form-check ms-3"><input class="form-check-input bulk-event" type="checkbox" value="b2:ObjectCreated:Copy" id="bulk_ev_created_copy"><label class="form-check-label small" for="bulk_ev_created_copy">Copy</label></div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="form-check"><input class="form-check-input bulk-event" type="checkbox" value="b2:ObjectDeleted:*" id="bulk_ev_deleted_all"><label class="form-check-label small" for="bulk_ev_deleted_all">All Object Deletions</label></div>
+                        <div class="form-check ms-3"><input class="form-check-input bulk-event" type="checkbox" value="b2:ObjectDeleted:Delete" id="bulk_ev_deleted_delete"><label class="form-check-label small" for="bulk_ev_deleted_delete">User Delete</label></div>
+                        <div class="form-check ms-3"><input class="form-check-input bulk-event" type="checkbox" value="b2:ObjectDeleted:LifecycleRule" id="bulk_ev_deleted_lifecycle"><label class="form-check-label small" for="bulk_ev_deleted_lifecycle">Lifecycle Delete</label></div>
+                    </div>
+                </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="bulkSaveBtn">Apply</button>
+          </div>
+        </div>
+      </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+// CSRF token for POST requests
+const CSRF_TOKEN = "{{ csrf_token() }}";
+// Wrap APP_PUBLIC_URL in quotes so the raw file is syntactically valid for linters while still evaluating correctly after Jinja renders.
+const APP_PUBLIC_URL = "{{ app_config.APP_PUBLIC_URL or '' }}";
+// Inject the default events array as a JSON string so the raw template is valid JS; parse at runtime.
+const DEFAULT_BULK_EVENT_TYPES = JSON.parse('{{ (app_config.WEBHOOK_DEFAULT_EVENTS or ["b2:ObjectCreated:*","b2:ObjectDeleted:*"]) | tojson | safe }}');
+
+// Fetch and render bucket list
+async function fetchBuckets() {
+    const tbody = document.querySelector('#bucketsTable tbody');
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center">Loading…</td></tr>';
+    try {
+        const res = await fetch('/api/b2_buckets');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.status);
+        renderBuckets(data.b2_buckets || []);
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-danger text-center">Error: ${err.message}</td></tr>`;
+    }
+}
+
+// Render rows
+function renderBuckets(buckets) {
+    const tbody = document.querySelector('#bucketsTable tbody');
+    tbody.innerHTML = '';
+    if (!buckets.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center">No buckets found. Click "Sync Buckets" to load.</td></tr>';
+        return;
+    }
+    buckets.forEach(b => {
+        const tr = document.createElement('tr');
+
+        // Checkbox cell
+        let td = document.createElement('td');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.classList.add('bucket-select');
+        checkbox.dataset.b2Id = b.bucket_b2_id;
+        td.appendChild(checkbox);
+        tr.appendChild(td);
+
+        // Bucket Name cell
+        td = document.createElement('td');
+        td.textContent = b.bucket_name;
+        tr.appendChild(td);
+
+        // Bucket ID cell
+        td = document.createElement('td');
+        td.classList.add('small');
+        td.textContent = b.bucket_b2_id;
+        tr.appendChild(td);
+
+        // Type cell
+        td = document.createElement('td');
+        td.textContent = b.bucket_type || 'N/A';
+        tr.appendChild(td);
+
+        // Notifications cell
+        td = document.createElement('td');
+        const notificationsEnabled = Array.isArray(b.event_notification_rules) && b.event_notification_rules.length > 0;
+        td.innerHTML = notificationsEnabled ? '<span class="badge bg-success">Enabled</span>' : '<span class="badge bg-secondary">Disabled</span>';
+        tr.appendChild(td);
+
+        // Webhook Secret cell
+        td = document.createElement('td');
+        td.classList.add('small', 'secret-cell');
+        const webhookSecret = b.webhook_secret || '-';
+        td.dataset.fullSecret = webhookSecret;
+        let displaySecret = '-';
+        if (webhookSecret !== '-' && webhookSecret.length > 8) {
+            displaySecret = webhookSecret.substring(0, 4) + '...' + webhookSecret.substring(webhookSecret.length - 4);
+        } else if (webhookSecret !== '-') {
+            displaySecret = webhookSecret;
+        }
+        const obfuscatedSpan = document.createElement('span');
+        obfuscatedSpan.classList.add('secret-obfuscated');
+        obfuscatedSpan.textContent = displaySecret;
+        td.appendChild(obfuscatedSpan);
+        const fullSpan = document.createElement('span');
+        fullSpan.classList.add('secret-full');
+        fullSpan.style.display = 'none';
+        fullSpan.textContent = webhookSecret;
+        td.appendChild(fullSpan);
+        if (webhookSecret !== '-') {
+            const toggleBtn = document.createElement('button');
+            toggleBtn.type = 'button';
+            toggleBtn.classList.add('btn', 'btn-xs', 'btn-outline-secondary', 'toggle-secret-visibility', 'ms-1', 'py-0', 'px-1');
+            toggleBtn.title = 'Show/Hide Secret';
+            const icon = document.createElement('i');
+            icon.classList.add('fas', 'fa-eye');
+            toggleBtn.appendChild(icon);
+            td.appendChild(toggleBtn);
+        }
+        tr.appendChild(td);
+
+        // Action cell
+        td = document.createElement('td');
+        const actionButton = document.createElement('button');
+        actionButton.classList.add('btn', 'btn-sm', 'toggleNotifyBtn');
+
+        // A bucket is "pending" when user enabled it locally but Backblaze hasn't confirmed the rule yet
+        const isPending = b.webhook_enabled && !notificationsEnabled;
+
+        if (notificationsEnabled) {
+            actionButton.classList.add('btn-danger');
+            actionButton.textContent = 'Disable';
+            actionButton.dataset.enable = 'false';
+        } else if (isPending) {
+            actionButton.classList.add('btn-secondary');
+            actionButton.textContent = 'Run Sync';
+            actionButton.disabled = true;
+            actionButton.dataset.enable = 'false'; // Not clickable, but keep data consistent
+        } else {
+            actionButton.classList.add('btn-success');
+            actionButton.textContent = 'Enable';
+            actionButton.dataset.enable = 'true';
+        }
+
+        actionButton.dataset.b2Id = b.bucket_b2_id;
+        td.appendChild(actionButton);
+        tr.appendChild(td);
+        
+        tbody.appendChild(tr);
+    });
+
+    // Attach event listeners AFTER all rows are in the DOM
+    document.querySelectorAll('.toggle-secret-visibility').forEach(btn => {
+        btn.addEventListener('click', function() { 
+            const secretCell = this.closest('.secret-cell');
+            if (!secretCell) return;
+            const obfuscatedSpan = secretCell.querySelector('.secret-obfuscated');
+            const fullSpan = secretCell.querySelector('.secret-full');
+            const icon = this.querySelector('i');
+            if (obfuscatedSpan && fullSpan && icon) {
+                if (fullSpan.style.display === 'none') {
+                    fullSpan.style.display = 'inline';
+                    obfuscatedSpan.style.display = 'none';
+                    icon.classList.remove('fa-eye');
+                    icon.classList.add('fa-eye-slash');
+                    this.setAttribute('title', 'Hide Secret');
+                } else {
+                    fullSpan.style.display = 'none';
+                    obfuscatedSpan.style.display = 'inline';
+                    icon.classList.remove('fa-eye-slash');
+                    icon.classList.add('fa-eye');
+                    this.setAttribute('title', 'Show Secret');
+                }
+            }
+        });
+    });
+
+    document.querySelectorAll('.toggleNotifyBtn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const b2Id = e.currentTarget.dataset.b2Id;
+            const enable = e.currentTarget.dataset.enable === 'true';
+            try {
+                await configureNotifications([b2Id], enable);
+            } catch (err) {
+                alert(`Error: ${err.message}`);
+            }
+        });
+    });
+
+    setupSelectionHandling();
+}
+
+// Selection logic
+function setupSelectionHandling() {
+    const selectAll = document.getElementById('selectAllBuckets');
+    const checkboxes = document.querySelectorAll('.bucket-select');
+
+    selectAll.onchange = () => {
+        checkboxes.forEach(cb => cb.checked = selectAll.checked);
+        updateBulkVisibility();
+    };
+    checkboxes.forEach(cb => cb.onchange = updateBulkVisibility);
+    updateBulkVisibility();
+}
+
+function updateBulkVisibility() {
+    const bulkDiv = document.getElementById('bulkActions');
+    const selected = document.querySelectorAll('.bucket-select:checked').length;
+    bulkDiv.style.display = selected > 0 ? 'block' : 'none';
+}
+
+// Configure notifications (single or bulk)
+async function configureNotifications(bucketIds, enable, eventTypes = null, webhookUrlOverride = '') {
+    try {
+        let url, payload;
+        if (bucketIds.length === 1) {
+            url = `/api/b2_buckets/${bucketIds[0]}/configure_notifications`;
+            payload = { enable };
+            if (enable) {
+                payload.event_types = eventTypes || DEFAULT_BULK_EVENT_TYPES;
+                if (webhookUrlOverride) payload.webhook_url = webhookUrlOverride;
+            }
+        } else {
+            url = '/api/b2_buckets/bulk_configure_notifications';
+            payload = { bucket_b2_ids: bucketIds, enable };
+            if (enable) {
+                payload.event_types = eventTypes || DEFAULT_BULK_EVENT_TYPES;
+                if (webhookUrlOverride) payload.webhook_url = webhookUrlOverride;
+            }
+        }
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || data.message || res.status);
+        await fetchBuckets(); // refresh list
+    } catch (err) {
+        alert(`Error: ${err.message}`);
+    }
+}
+
+// Event listeners
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('syncBucketsBtn').addEventListener('click', async () => {
+        const status = document.getElementById('syncStatus');
+        status.textContent = 'Syncing…';
+        try {
+            const res = await fetch('/api/b2_buckets/sync', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN }
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || data.message || res.status);
+            status.innerHTML = `<span class="text-success">${data.message || 'Sync complete'}</span>`;
+            document.getElementById('lastSyncTime').textContent = new Date().toLocaleString();
+            await fetchBuckets();
+        } catch (err) {
+            status.innerHTML = `<span class="text-danger">Sync error: ${err.message}</span>`;
+        }
+    });
+
+    document.getElementById('bulkEnableBtn').addEventListener('click', () => {
+        const ids = [...document.querySelectorAll('.bucket-select:checked')].map(cb => cb.dataset.b2Id);
+        configureNotifications(ids, true);
+    });
+    document.getElementById('bulkDisableBtn').addEventListener('click', () => {
+        const ids = [...document.querySelectorAll('.bucket-select:checked')].map(cb => cb.dataset.b2Id);
+        configureNotifications(ids, false);
+    });
+
+    document.getElementById('bulkConfigureBtn').addEventListener('click', () => {
+        const ids = [...document.querySelectorAll('.bucket-select:checked')].map(cb => cb.dataset.b2Id);
+        if (!ids.length) return;
+        document.getElementById('bulkCount').textContent = ids.length;
+        // Reset modal fields
+        document.getElementById('bulkEnableSwitch').checked = true;
+        document.querySelectorAll('.bulk-event').forEach(cb => cb.checked = DEFAULT_BULK_EVENT_TYPES.includes(cb.value));
+        const modal = new bootstrap.Modal(document.getElementById('bulkConfigModal'));
+        modal.show();
+
+        document.getElementById('bulkSaveBtn').onclick = async () => {
+            const enable = document.getElementById('bulkEnableSwitch').checked;
+            const selectedEvents = [...document.querySelectorAll('.bulk-event:checked')].map(cb => cb.value);
+            const urlOverride = document.getElementById('bulkWebhookUrl').value.trim();
+            await configureNotifications(ids, enable, selectedEvents, urlOverride);
+            modal.hide();
+        };
+
+        // Set default webhook URL each time modal opens
+        const defUrl = APP_PUBLIC_URL ? APP_PUBLIC_URL.replace(/\/+$/, '') + '/api/webhooks/backblaze' : '';
+        const urlInput = document.getElementById('bulkWebhookUrl');
+        if (urlInput && !urlInput.value) urlInput.value = defUrl;
+    });
+
+    // Initial load
+    fetchBuckets();
+});
+</script>
+{% endblock %}

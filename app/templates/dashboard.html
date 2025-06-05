@@ -1,0 +1,427 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} – Backblaze Snapshot Reporting{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2><i class="fas fa-tachometer-alt me-2"></i>{{ page_title }}</h2>
+        <div id="lastUpdated" class="text-muted small">Data last refreshed: Never</div>
+    </div>
+
+    <!-- Filters Row -->
+    <div class="row g-3 mb-4 align-items-end">
+        <div class="col-md-4 col-lg-3">
+            <label for="bucketFilter" class="form-label">Bucket:</label>
+            <select id="bucketFilter" class="form-select form-select-sm">
+                <option value="all" selected>All Buckets</option>
+                {% for bucket in bucket_names %}
+                <option value="{{ bucket }}">{{ bucket }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-4 col-lg-3">
+            <label for="timeFrameFilter" class="form-label">Time Frame:</label>
+            <select id="timeFrameFilter" class="form-select form-select-sm">
+                <option value="today">Today</option>
+                <option value="yesterday">Yesterday</option>
+                <option value="this_week">This Week (Mon - Today)</option>
+                <option value="last_7_days" selected>Last 7 Days</option>
+                <option value="this_month">This Month</option>
+                <option value="last_30_days">Last 30 Days</option>
+                <option value="this_quarter">This Quarter</option>
+                <option value="this_year">This Year</option>
+                <option value="custom">Custom Range</option>
+            </select>
+        </div>
+        <div class="col-md-4 col-lg-4" id="customDateRangePickers" style="display: none;">
+            <div class="row g-2">
+                <div class="col">
+                    <label for="startDate" class="form-label">Start Date:</label>
+                    <input type="date" id="startDate" class="form-control form-control-sm">
+                </div>
+                <div class="col">
+                    <label for="endDate" class="form-label">End Date:</label>
+                    <input type="date" id="endDate" class="form-control form-control-sm">
+                </div>
+            </div>
+        </div>
+        <div class="col-md-12 col-lg-2">
+            <button id="applyFiltersBtn" class="btn btn-primary btn-sm w-100">Apply</button>
+        </div>
+    </div>
+
+    <!-- Summary Cards Row -->
+    <div class="row mb-4">
+        <div class="col-md-6 col-lg-3 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="fas fa-plus-circle text-success me-2"></i>Objects Added</h5>
+                    <p class="card-text fs-4 fw-bold" id="summaryObjectsAdded">-</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6 col-lg-3 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="fas fa-upload text-success me-2"></i>Size Added</h5>
+                    <p class="card-text fs-4 fw-bold" id="summarySizeAdded">-</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6 col-lg-3 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="fas fa-minus-circle text-danger me-2"></i>Objects Deleted</h5>
+                    <p class="card-text fs-4 fw-bold" id="summaryObjectsDeleted">-</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6 col-lg-3 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="fas fa-download text-danger me-2"></i>Size Deleted</h5>
+                    <p class="card-text fs-4 fw-bold" id="summarySizeDeleted">-</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row mb-4">
+         <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="fas fa-balance-scale text-primary me-2"></i>Net Object Change</h5>
+                    <p class="card-text fs-4 fw-bold" id="summaryNetObjects">-</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="fas fa-exchange-alt text-primary me-2"></i>Net Size Change (Period)</h5>
+                    <p class="card-text fs-4 fw-bold" id="summaryNetSizePeriod">-</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-12 col-lg-4 mb-3">
+            <div class="card h-100 bg-light">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="fas fa-calendar-day text-info me-2"></i>Net Data Change Today</h5>
+                    <p class="card-text fs-4 fw-bold" id="summaryNetSizeToday">-</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts Row -->
+    <div class="row mb-4">
+        <div class="col-lg-6 mb-3">
+            <div class="card h-100">
+                <div class="card-header">Object Operations Over Time</div>
+                <div class="card-body" style="height: 400px; position: relative;"><canvas id="objectOperationsChart"></canvas></div>
+            </div>
+        </div>
+        <div class="col-lg-6 mb-3">
+            <div class="card h-100">
+                <div class="card-header">Data Volume Over Time</div>
+                <div class="card-body" style="height: 400px; position: relative;"><canvas id="dataVolumeChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Top 10 Lists (Placeholder for now) -->
+    <div class="row">
+        <div class="col-12">
+            <h4>Popular Buckets (Top 10)</h4>
+            <p class="text-muted">Details for Top 10 lists will be added in a future update.</p>
+        </div>
+        <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card">
+                <div class="card-header">By Size Added</div>
+                <ul class="list-group list-group-flush" id="topSizeAddedList">
+                    <li class="list-group-item">Placeholder</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card">
+                <div class="card-header">By Size Removed</div>
+                <ul class="list-group list-group-flush" id="topSizeRemovedList">
+                    <li class="list-group-item">Placeholder</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card">
+                <div class="card-header">By Objects Added</div>
+                <ul class="list-group list-group-flush" id="topObjectsAddedList">
+                    <li class="list-group-item">Placeholder</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card">
+                <div class="card-header">By Objects Removed</div>
+                <ul class="list-group list-group-flush" id="topObjectsRemovedList">
+                    <li class="list-group-item">Placeholder</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card">
+                <div class="card-header">"Stale" Buckets (Oldest Last Add)</div>
+                <ul class="list-group list-group-flush" id="topStaleBucketsList">
+                    <li class="list-group-item">Placeholder</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+</div> <!-- container-fluid -->
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@2.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
+<script>
+    // Utility to format bytes
+    function formatBytes(bytes, decimals = 2) {
+        if (bytes === 0 || bytes === null || typeof bytes === 'undefined') return '0 Bytes';
+        const k = 1024;
+        const dm = decimals < 0 ? 0 : decimals;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+        const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const bucketFilter = document.getElementById('bucketFilter');
+        const timeFrameFilter = document.getElementById('timeFrameFilter');
+        const customDateRangePickers = document.getElementById('customDateRangePickers');
+        const startDateInput = document.getElementById('startDate');
+        const endDateInput = document.getElementById('endDate');
+        const applyFiltersBtn = document.getElementById('applyFiltersBtn');
+        const lastUpdatedEl = document.getElementById('lastUpdated');
+
+        let objectOperationsChart = null;
+        let dataVolumeChart = null;
+
+        // Top 10 List Elements
+        const topSizeAddedListEl = document.getElementById('topSizeAddedList');
+        const topSizeRemovedListEl = document.getElementById('topSizeRemovedList');
+        const topObjectsAddedListEl = document.getElementById('topObjectsAddedList');
+        const topObjectsRemovedListEl = document.getElementById('topObjectsRemovedList');
+        const topStaleBucketsListEl = document.getElementById('topStaleBucketsList');
+
+        timeFrameFilter.addEventListener('change', function() {
+            if (this.value === 'custom') {
+                customDateRangePickers.style.display = 'flex';
+            } else {
+                customDateRangePickers.style.display = 'none';
+            }
+        });
+
+        function getChartConfig(chartData, yAxisLabel, datasetsConfig) {
+            return {
+                type: 'bar', // Default, can be overridden
+                data: {
+                    labels: chartData.map(d => d.date),
+                    datasets: datasetsConfig.map(config => ({
+                        label: config.label,
+                        data: chartData.map(d => d[config.key]),
+                        backgroundColor: config.backgroundColor,
+                        borderColor: config.borderColor,
+                        borderWidth: 1,
+                        fill: config.fill !== undefined ? config.fill : false,
+                        type: config.type || 'bar', // Allow mixed chart types
+                        yAxisID: config.yAxisID || 'y',
+                    }))
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                tooltipFormat: 'MMM d, yyyy',
+                                displayFormats: {
+                                    day: 'MMM d'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: yAxisLabel
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                        }
+                    }
+                }
+            };
+        }
+
+        async function fetchDataAndRender() {
+            const bucket = bucketFilter.value;
+            const timeFrame = timeFrameFilter.value;
+            let startDate = startDateInput.value;
+            let endDate = endDateInput.value;
+
+            let queryParams = `time_frame=${timeFrame}`;
+            if (bucket !== 'all') {
+                queryParams += `&bucket_name=${encodeURIComponent(bucket)}`;
+            }
+            if (timeFrame === 'custom') {
+                if (startDate && endDate) {
+                    queryParams += `&start_date=${startDate}&end_date=${endDate}`;
+                } else {
+                    // Maybe show an alert or prevent fetch if custom range is incomplete
+                    console.warn("Custom date range selected but dates are incomplete.");
+                    // For now, let it use default 'today' by not passing custom dates
+                     queryParams = `time_frame=today`; // Fallback if custom is bad
+                     if (bucket !== 'all') queryParams += `&bucket_name=${encodeURIComponent(bucket)}`;
+                }
+            }
+
+            try {
+                lastUpdatedEl.textContent = 'Loading...';
+                // Fetch summary stats
+                const summaryRes = await fetch(`/api/dashboard/stats/summary?${queryParams}`);
+                const summaryData = await summaryRes.json();
+
+                if (summaryData.error) {
+                    console.error("Error fetching summary stats:", summaryData.error);
+                    lastUpdatedEl.textContent = `Error loading: ${summaryData.error}`;
+                    return;
+                }
+
+                document.getElementById('summaryObjectsAdded').textContent = (summaryData.objects_added || 0).toLocaleString();
+                document.getElementById('summarySizeAdded').textContent = formatBytes(summaryData.size_added || 0);
+                document.getElementById('summaryObjectsDeleted').textContent = (summaryData.objects_deleted || 0).toLocaleString();
+                document.getElementById('summarySizeDeleted').textContent = formatBytes(summaryData.size_deleted || 0);
+                document.getElementById('summaryNetObjects').textContent = (summaryData.net_object_change || 0).toLocaleString();
+                document.getElementById('summaryNetSizePeriod').textContent = formatBytes(summaryData.net_size_change || 0);
+                document.getElementById('summaryNetSizeToday').textContent = formatBytes(summaryData.net_size_change_today || 0);
+
+                // Fetch daily breakdown stats
+                const dailyRes = await fetch(`/api/dashboard/stats/daily_breakdown?${queryParams}`);
+                const dailyData = await dailyRes.json();
+
+                if (dailyData.error) {
+                    console.error("Error fetching daily stats:", dailyData.error);
+                    lastUpdatedEl.textContent = `Error loading daily: ${dailyData.error}`;
+                    return;
+                }
+                
+                // Object Operations Chart
+                const objectOpsCtx = document.getElementById('objectOperationsChart').getContext('2d');
+                if (objectOperationsChart) objectOperationsChart.destroy();
+                objectOperationsChart = new Chart(objectOpsCtx, getChartConfig(
+                    dailyData.daily_data || [], 
+                    'Number of Objects',
+                    [
+                        { label: 'Objects Added', key: 'objects_added', backgroundColor: 'rgba(75, 192, 192, 0.5)', borderColor: 'rgb(75, 192, 192)', type: 'line', fill: true },
+                        { label: 'Objects Deleted', key: 'objects_deleted', backgroundColor: 'rgba(255, 99, 132, 0.5)', borderColor: 'rgb(255, 99, 132)', type: 'line', fill: true }
+                    ]
+                ));
+
+                // Data Volume Chart
+                const dataVolumeCtx = document.getElementById('dataVolumeChart').getContext('2d');
+                if (dataVolumeChart) dataVolumeChart.destroy();
+                dataVolumeChart = new Chart(dataVolumeCtx, getChartConfig(
+                    dailyData.daily_data || [], 
+                    'Data Size',
+                    [
+                        { label: 'Size Added', key: 'size_added', backgroundColor: 'rgba(54, 162, 235, 0.5)', borderColor: 'rgb(54, 162, 235)', type: 'bar' },
+                        { label: 'Size Deleted', key: 'size_deleted', backgroundColor: 'rgba(255, 159, 64, 0.5)', borderColor: 'rgb(255, 159, 64)', type: 'bar' }
+                    ]
+                ));
+                dataVolumeChart.options.scales.y.ticks = { callback: function(value) { return formatBytes(value); } };
+                dataVolumeChart.options.plugins.tooltip.callbacks = {
+                    label: function(context) {
+                        let label = context.dataset.label || '';
+                        if (label) {
+                            label += ': ';
+                        }
+                        if (context.parsed.y !== null) {
+                            label += formatBytes(context.parsed.y);
+                        }
+                        return label;
+                    }
+                };
+                dataVolumeChart.update();
+
+                // Fetch and render Top 10 lists
+                fetchAndRenderTopLists(queryParams);
+
+                lastUpdatedEl.textContent = `Data last refreshed: ${new Date().toLocaleString()}`;
+
+            } catch (error) {
+                console.error("Failed to fetch dashboard data:", error);
+                lastUpdatedEl.textContent = `Error loading: ${error.message}`;
+            }
+        }
+
+        async function fetchAndRenderTopLists(baseQueryParams) {
+            // For stale buckets, time_frame is not directly applicable in the same way, but we can pass it if API adapts
+            // Or, fetch stale buckets without time_frame if its API doesn't use it.
+            const staleParams = 'limit=10&active_threshold_days=90'; // Example default params for stale
+
+            fetchTopList(`/api/dashboard/top_buckets/size_added?${baseQueryParams}`, topSizeAddedListEl, item => `${item.bucket_name}: ${formatBytes(item.total_size)}`);
+            fetchTopList(`/api/dashboard/top_buckets/size_removed?${baseQueryParams}`, topSizeRemovedListEl, item => `${item.bucket_name}: ${formatBytes(item.total_size)}`);
+            fetchTopList(`/api/dashboard/top_buckets/objects_added?${baseQueryParams}`, topObjectsAddedListEl, item => `${item.bucket_name}: ${item.total_objects.toLocaleString()} objects`);
+            fetchTopList(`/api/dashboard/top_buckets/objects_removed?${baseQueryParams}`, topObjectsRemovedListEl, item => `${item.bucket_name}: ${item.total_objects.toLocaleString()} objects`);
+            fetchTopList(`/api/dashboard/top_buckets/stale?${staleParams}`, topStaleBucketsListEl, item => {
+                let detail = 'No creation events found';
+                if (item.last_creation_event) {
+                    const date = new Date(item.last_creation_event);
+                    detail = `Last add: ${date.toLocaleDateString()}`;
+                }
+                return `${item.bucket_name} <small class="text-muted">(${detail})</small>`;
+            });
+        }
+
+        async function fetchTopList(url, listElement, formatter) {
+            try {
+                listElement.innerHTML = '<li class="list-group-item">Loading...</li>';
+                const res = await fetch(url);
+                const data = await res.json();
+                if (data.error) {
+                    listElement.innerHTML = `<li class="list-group-item text-danger">Error: ${data.error}</li>`;
+                    return;
+                }
+                if (data && data.length > 0) {
+                    listElement.innerHTML = data.map(item => `<li class="list-group-item">${formatter(item)}</li>`).join('');
+                } else {
+                    listElement.innerHTML = '<li class="list-group-item text-muted">No data available.</li>';
+                }
+            } catch (error) {
+                listElement.innerHTML = `<li class="list-group-item text-danger">Fetch error: ${error.message}</li>`;
+                console.error(`Error fetching top list from ${url}:`, error);
+            }
+        }
+
+        applyFiltersBtn.addEventListener('click', fetchDataAndRender);
+
+        // Initial load
+        // Explicitly set the time frame to last_7_days to override any browser caching
+        timeFrameFilter.value = 'last_7_days';
+        
+        fetchDataAndRender();
+    });
+</script>
+{% endblock %} 

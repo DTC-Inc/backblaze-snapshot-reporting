@@ -1,15 +1,18 @@
 import os
 from flask import request, render_template, flash, redirect, url_for, Blueprint, current_app
 from flask_login import login_required
-from .app import db, logger
+import logging # Import logging
 
 schedule_bp = Blueprint('schedule_routes', __name__, url_prefix='/schedule')
+# Get a logger specific to this blueprint
+logger = logging.getLogger(__name__)
 
 @schedule_bp.route('/settings', methods=['GET'])
 @login_required
 def schedule_settings():
     """View and edit snapshot schedule settings"""
     try:
+        db = current_app.config['DATABASE_INSTANCE']
         # Get current schedule settings
         schedule_settings_data = db.get_schedule_settings()
         
@@ -24,7 +27,7 @@ def schedule_settings():
         )
         
     except Exception as e:
-        current_app.logger.error(f"Error in schedule settings route: {str(e)}")
+        logger.error(f"Error in schedule settings route: {str(e)}") # Use the blueprint-specific logger
         return render_template('error.html', error=str(e))
 
 @schedule_bp.route('/settings', methods=['POST'])
@@ -32,6 +35,7 @@ def schedule_settings():
 def save_schedule_settings():
     """Save snapshot schedule settings"""
     try:
+        db = current_app.config['DATABASE_INSTANCE']
         # Get form data
         schedule_type = request.form.get('schedule_type', 'interval')
         interval_hours = int(request.form.get('interval_hours', '24'))
@@ -93,7 +97,7 @@ def save_schedule_settings():
         return redirect(url_for('.schedule_settings'))
         
     except Exception as e:
-        current_app.logger.error(f"Error saving schedule settings: {str(e)}")
+        logger.error(f"Error saving schedule settings: {str(e)}") # Use the blueprint-specific logger
         flash(f'Error saving settings: {str(e)}', 'danger')
         return redirect(url_for('.schedule_settings'))
 
@@ -102,6 +106,7 @@ def save_schedule_settings():
 def snapshots():
     """View all snapshots with filtering options"""
     try:
+        db = current_app.config['DATABASE_INSTANCE']
         limit = int(request.args.get('limit', 30))
         snapshots_data = db.get_latest_snapshots(limit=limit)
         
@@ -112,7 +117,7 @@ def snapshots():
         )
         
     except Exception as e:
-        current_app.logger.error(f"Error viewing snapshots: {str(e)}")
+        logger.error(f"Error viewing snapshots: {str(e)}") # Use the blueprint-specific logger
         return render_template('error.html', error=str(e))
 
 @schedule_bp.route('/notifications/settings', methods=['GET']) # Example for notification_settings
@@ -141,6 +146,7 @@ def save_notification_settings():
 def manual_snapshot_cleanup():
     """Manually trigger snapshot cleanup"""
     try:
+        db = current_app.config['DATABASE_INSTANCE']
         days = int(request.form.get('days', 30))
         if days < 1:
             flash('Retention days must be at least 1.', 'warning')
@@ -151,6 +157,6 @@ def manual_snapshot_cleanup():
         return redirect(url_for('.snapshots')) # Corrected to blueprint endpoint
         
     except Exception as e:
-        current_app.logger.error(f"Error in manual cleanup: {str(e)}")
+        logger.error(f"Error in manual cleanup: {str(e)}") # Use the blueprint-specific logger
         flash(f'Error cleaning up snapshots: {str(e)}', 'danger')
         return redirect(url_for('.snapshots')) # Corrected to blueprint endpoint

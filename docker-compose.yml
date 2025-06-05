@@ -1,5 +1,3 @@
-version: '3.8'
-
 name: ${STACK_NAME:-bbssr}
 
 networks:
@@ -14,6 +12,10 @@ x-postgres-condition: &postgres-condition
   condition: service_healthy
   required: false
 
+x-redis-condition: &redis-condition
+  condition: service_healthy
+  required: true
+
 services:
   web:
     container_name: ${STACK_NAME:-bbssr}_web
@@ -23,7 +25,6 @@ services:
       - "${APP_PORT:-5000}:5000"
     volumes:
       - bbssr_data:/data
-    user: "${PID:-1000}:${GID:-1000}"
     restart: unless-stopped
     networks:
       - app_network
@@ -38,23 +39,27 @@ services:
       start_period: 40s
     depends_on:
       postgres: *postgres-condition
-      
-  cloudflared:
-    container_name: ${STACK_NAME:-bbssr}_cloudflared
-    image: cloudflare/cloudflared:latest
-    entrypoint: ["cloudflared", "--no-autoupdate"]
-    command: ["tunnel", "run"]
-    env_file:
-      - stack.env
-    environment:
-      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+      redis: *redis-condition
+
+  redis:
+    container_name: ${STACK_NAME:-bbssr}_redis
+    image: redis:7-alpine
+    restart: unless-stopped
     networks:
       - app_network
-    restart: always
-    depends_on:
-      web:
-        condition: service_healthy
-        
+    volumes:
+      - bbssr_redis:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      # Redis will start if REDIS_ENABLED=true (default)
+      replicas: ${REDIS_ENABLED:-1}
+            
   postgres:
     container_name: ${STACK_NAME:-bbssr}_postgres
     image: postgres:14-alpine
@@ -75,6 +80,20 @@ services:
       # Service will only start if USE_POSTGRES=true
       replicas: ${USE_POSTGRES:-0}
 
+  cloudflared:
+    container_name: ${STACK_NAME:-bbssr}_cloudflared
+    image: cloudflare/cloudflared:latest
+    entrypoint: ["cloudflared", "--no-autoupdate"]
+    command: ["tunnel", "run"]
+    restart: unless-stopped
+    env_file:
+      - stack.env
+    networks:
+      - app_network
+    depends_on:
+      - web
+
 volumes:
   bbssr_data:
   bbssr_db:
+  bbssr_redis:

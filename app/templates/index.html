@@ -6,27 +6,34 @@
         <div class="btn-toolbar mb-2 mb-md-0">
             <div class="btn-group me-2">
                 <div class="dropdown">
-                    <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" id="snapshotDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                        Take New Snapshot
+                    <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" id="takeActionsDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                        Take Action
                     </button>
-                    <ul class="dropdown-menu" aria-labelledby="snapshotDropdown">
+                    <ul class="dropdown-menu" aria-labelledby="takeActionsDropdown">
                         <li>
                             <form action="{{ url_for('new_snapshot') }}" method="post" id="newSnapshotForm" class="px-2 py-1">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                <button type="submit" class="btn btn-sm btn-link text-decoration-none">Normal Snapshot</button>
+                                <button type="submit" class="dropdown-item btn-link">Take Snapshot (with cache)</button>
                             </form>
                             <div class="px-2 pb-1 text-muted small">
-                                Will resume from the last failed snapshot if possible.
+                                Standard snapshot, resumes if possible.
                             </div>
                         </li>
                         <li>
-                            <form action="{{ url_for('new_snapshot') }}" method="post" id="newSnapshotFormWithCache" class="px-2 py-1">
+                            <form action="{{ url_for('new_snapshot') }}" method="post" id="newSnapshotClearCacheForm" class="px-2 py-1">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <input type="hidden" name="clear_cache" value="true">
-                                <button type="submit" class="btn btn-sm btn-link text-decoration-none">Clear Cache & Snapshot</button>
+                                <button type="submit" class="dropdown-item btn-link">Take Snapshot (without cache)</button>
                             </form>
                             <div class="px-2 pb-1 text-muted small">
-                                Starts completely fresh, clearing all caches.
+                                Clears auth & B2 object cache first.
+                            </div>
+                        </li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li>
+                            <button type="button" class="dropdown-item" id="syncBucketsIndexBtn">Refresh Bucket List from B2</button>
+                            <div class="px-2 pb-1 text-muted small">
+                                Updates local list of buckets & their settings.
                             </div>
                         </li>
                     </ul>
@@ -59,8 +66,7 @@
             {% for category, message in messages %}
                 <div class="alert alert-{{ category }}">{{ message }}</div>
             {% endfor %}
-        {% endif %}
-    {% endwith %}    {% if significant_changes %}
+        {% endif %}    {% if significant_changes %}
     <div class="alert alert-warning">
         <h4>Significant Cost Changes Detected!</h4>
         <ul>
@@ -389,6 +395,55 @@
                 }
             }
         });
+
+        const syncBucketsIndexBtn = document.getElementById('syncBucketsIndexBtn');
+        if (syncBucketsIndexBtn) {
+            syncBucketsIndexBtn.addEventListener('click', async function() {
+                const originalText = this.textContent;
+                this.disabled = true;
+                this.textContent = 'Syncing...';
+                
+                try {
+                    const csrfToken = "{{ csrf_token() }}"; // Get CSRF token
+                    const response = await fetch('/api/b2_buckets/sync', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': csrfToken 
+                        }
+                    });
+                    const result = await response.json(); 
+                    if (!response.ok) {
+                        throw new Error(result.error || `HTTP error ${response.status}`);
+                    }
+                    // Using a flash message system would be better, but alert for now.
+                    const flashMessagesContainer = document.querySelector('.flashes'); // Assuming you have such a container in base.html
+                    if (flashMessagesContainer) {
+                        const alertDiv = document.createElement('div');
+                        alertDiv.className = 'alert alert-success alert-dismissible fade show';
+                        alertDiv.role = 'alert';
+                        alertDiv.innerHTML = `${result.message || 'Bucket list sync complete!'}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>`;
+                        flashMessagesContainer.appendChild(alertDiv);
+                    } else {
+                        alert(result.message || 'Bucket list sync complete!');
+                    }
+                } catch (error) {
+                    console.error('Error syncing buckets from index page:', error);
+                    const flashMessagesContainer = document.querySelector('.flashes');
+                     if (flashMessagesContainer) {
+                        const alertDiv = document.createElement('div');
+                        alertDiv.className = 'alert alert-danger alert-dismissible fade show';
+                        alertDiv.role = 'alert';
+                        alertDiv.innerHTML = `Error syncing buckets: ${error.message}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>`;
+                        flashMessagesContainer.appendChild(alertDiv);
+                    } else {
+                        alert('Error syncing buckets: ' + error.message);
+                    }
+                }
+                this.disabled = false;
+                this.textContent = originalText;
+            });
+        }
     });
     </script>
 {% endblock %}

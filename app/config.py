@@ -10,7 +10,7 @@ B2_APPLICATION_KEY_ID = os.getenv('B2_APPLICATION_KEY_ID')
 B2_APPLICATION_KEY = os.getenv('B2_APPLICATION_KEY')
 
 # Database settings
-DATABASE_URI = os.getenv('DATABASE_URI', 'sqlite:///backblaze_snapshots.db')
+DATABASE_URI = os.getenv('DATABASE_URI', 'sqlite:////data/backblaze_snapshots.db')
 
 # Snapshot settings
 SNAPSHOT_INTERVAL_HOURS = int(os.getenv('SNAPSHOT_INTERVAL_HOURS', '24'))
@@ -63,6 +63,17 @@ DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 't')
 SECRET_KEY = os.getenv('SECRET_KEY', 'default-dev-key-change-in-production')
 HOST = os.getenv('HOST', '0.0.0.0')
 PORT = int(os.getenv('PORT', '5000'))
+APP_PUBLIC_URL = os.getenv('APP_PUBLIC_URL', '') # The public base URL of this application
+
+# Webhook settings
+WEBHOOK_ENABLED = os.getenv('WEBHOOK_ENABLED', 'True').lower() in ('true', '1', 't')
+WEBHOOK_SECRET_AUTO_GENERATE = os.getenv('WEBHOOK_SECRET_AUTO_GENERATE', 'True').lower() in ('true', '1', 't')
+WEBHOOK_DEFAULT_EVENTS = os.getenv('WEBHOOK_DEFAULT_EVENTS', 'b2:ObjectCreated:*,b2:ObjectDeleted:*').split(',')
+
+# Redis Settings for Event Buffering
+REDIS_URL = os.getenv('REDIS_URL', 'redis://redis:6379/0')  # Default to Docker service name
+REDIS_FLUSH_INTERVAL = int(os.getenv('REDIS_FLUSH_INTERVAL', '10'))  # seconds
+REDIS_ENABLED = os.getenv('REDIS_ENABLED', 'true').lower() == 'true'
 
 # Create cache directory if it doesn't exist
 os.makedirs(SNAPSHOT_CACHE_DIR, exist_ok=True)

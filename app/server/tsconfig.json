@@ -1,0 +1,16 @@
+{
+  "extends": "@backblaze-snapshot/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": "../../apps/server/src",
+    "outDir": "../../apps/server/dist",
+    "module": "commonjs",
+    "target": "es2019",
+    "lib": ["es2019"],
+    "baseUrl": "../../apps/server",
+    "paths": {
+      "@/*": ["../../apps/server/src/*"]
+    }
+  },
+  "include": ["../../apps/server/src/**/*"],
+  "exclude": ["../../apps/server/node_modules", "../../apps/server/dist"]
+} 

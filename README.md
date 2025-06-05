@@ -15,6 +15,10 @@ A Python web application that monitors Backblaze B2 usage and costs, helping you
 - Data caching to reduce API calls
 - SQLite or PostgreSQL database for snapshot history
 - Real-time progress updates via WebSockets
+- **Real-time webhook integration** for Backblaze B2 object events
+- **Comprehensive webhook management** with per-bucket configuration
+- **Object-level activity tracking** for created, deleted, restored, and archived files
+- **Webhook event statistics and analytics**
 
 ## Deployment Options
 
@@ -262,6 +266,41 @@ If you experience WebSocket connection issues:
 ```
 docker compose restart web
 ```
+
+### Webhook Configuration
+
+The application now supports real-time webhooks from Backblaze B2 to track object-level events. This allows you to monitor file uploads, downloads, deletions, and other activities as they happen.
+
+#### Setting Up Webhooks
+
+1. **Navigate to Webhook Management** in the application sidebar
+2. **Add your buckets** and configure which events to track:
+   - Object Created (file uploads)
+   - Object Deleted (file deletions)
+   - Object Restored (files restored from archive)
+   - Object Archived (files moved to archive)
+3. **Copy the webhook URL** provided by the application
+4. **Configure your Backblaze B2 bucket** to send webhooks to this URL
+5. **Test the configuration** by uploading or deleting a file
+
+#### Webhook Features
+
+- **Real-time event tracking**: See object-level activity as it happens
+- **Per-bucket configuration**: Configure different settings for each bucket
+- **Event filtering**: Choose which event types to track
+- **Security**: Webhook signature verification with auto-generated secrets
+- **Analytics**: View statistics and trends for webhook activity
+- **Event history**: Browse and search through historical webhook events
+
+#### Webhook Security
+
+For production deployments, always:
+- Use HTTPS for your webhook endpoints
+- Enable webhook secrets for signature verification
+- Monitor webhook activity for unusual patterns
+- Keep webhook secrets secure and rotate them periodically
+
+For detailed webhook setup instructions, see [docs/WEBHOOK_SETUP.md](docs/WEBHOOK_SETUP.md).
 
 ## Configuration Options
 

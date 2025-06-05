@@ -54,6 +54,21 @@
                                 API Credentials
                             </a>
                         </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.path == '/webhooks' %}active{% endif %}" href="{{ url_for('webhooks') }}">
+                                Webhook Management
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.path == '/webhook_events' %}active{% endif %}" href="{{ url_for('webhook.webhook_events_page') }}">
+                                Webhook Events Monitor
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.path == '/b2_buckets' %}active{% endif %}" href="{{ url_for('manage_b2_buckets_page') }}">
+                                B2 Buckets Management
+                            </a>
+                        </li>
                         <li class="nav-item dropdown mt-2">
                             <button class="btn btn-sm btn-primary dropdown-toggle" type="button" id="snapshotDropdown" data-bs-toggle="dropdown" aria-expanded="false">
                                 Take Snapshot
@@ -133,5 +148,11 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+    
+    <!-- Socket.IO for real-time updates -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+    {# Optional per-page scripts #}
+    {% block scripts %}{% endblock %}
 </body>
 </html>

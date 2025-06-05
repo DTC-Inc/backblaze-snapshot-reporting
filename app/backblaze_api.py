@@ -98,16 +98,29 @@ class BackblazeClient:
                     cache_data = json.load(f)
                 
                 # Check if cache is still valid
-                cached_time = datetime.fromisoformat(cache_data.get('timestamp', '2000-01-01'))
-                if datetime.now() - cached_time < timedelta(seconds=self.auth_expiration - 3600):
+                cached_time_str = cache_data.get('timestamp', '2000-01-01')
+                try:
+                    cached_time = datetime.fromisoformat(cached_time_str)
+                except ValueError:
+                    logger.warning(f"Invalid timestamp in auth cache: {cached_time_str}")
+                    return False
+                
+                age_seconds = (datetime.now() - cached_time).total_seconds()
+                max_age_seconds = self.auth_expiration - 3600  # 1-hour safety margin
+                
+                logger.debug(f"Auth cache age: {age_seconds:.1f}s, max age: {max_age_seconds}s")
+                
+                if age_seconds < max_age_seconds:
                     # Use cached data (with 1-hour safety margin)
                     self.api_url = cache_data.get('apiUrl')
                     self.auth_token = cache_data.get('authorizationToken')
                     self.account_id = cache_data.get('accountId')
                     self.download_url = cache_data.get('downloadUrl')
                     self.auth_timestamp = cached_time
-                    logger.info("Using cached authentication data")
+                    logger.info(f"Using cached authentication data (age: {age_seconds:.1f}s)")
                     return True
+                else:
+                    logger.debug(f"Auth cache expired (age: {age_seconds:.1f}s > max: {max_age_seconds}s)")
         except Exception as e:
             logger.warning(f"Could not load cached auth data: {e}")
         return False
@@ -144,6 +157,7 @@ class BackblazeClient:
             return False
         
         try:
+            logger.debug(f"Attempting B2 authorization with key ending in ...{key_id[-4:] if len(key_id) > 4 else key_id}")
             response = requests.get(
                 url, 
                 auth=(key_id, app_key),
@@ -158,6 +172,22 @@ class BackblazeClient:
             self.download_url = auth_data['downloadUrl']
             self.api_calls_made += 1
             self.auth_timestamp = datetime.now()
+            
+            logger.debug(f"B2 authorization successful. Token expires in ~24h. Timestamp: {self.auth_timestamp}")
+            logger.debug(f"API URL: {self.api_url}")
+            
+            # Log capabilities for debugging
+            capabilities = auth_data.get('allowed', {}).get('capabilities', [])
+            logger.info(f"B2 Auth successful. Capabilities: {', '.join(capabilities) if capabilities else 'none listed'}")
+            
+            # Check for webhook-related capabilities
+            webhook_caps = [cap for cap in capabilities if 'Notification' in cap]
+            if webhook_caps:
+                logger.info(f"Webhook capabilities found: {', '.join(webhook_caps)}")
+            else:
+                logger.warning("No webhook notification capabilities found in auth token")
+                logger.warning("Webhook configuration may fail. Required: writeBucketNotifications, readBucketNotifications")
+            
             # Save to cache
             self._save_auth_cache(auth_data)
             logger.info(f"Successfully authorized with Backblaze B2 API")
@@ -167,6 +197,43 @@ class BackblazeClient:
             logger.error(f"Failed to authorize with Backblaze B2 API: {str(e)}")
             return False
             
+    def get_auth_capabilities(self):
+        """Get the capabilities of the current auth token for troubleshooting.
+        
+        Returns:
+            dict: Contains capabilities list and webhook-specific info
+        """
+        if not self.auth_token:
+            return {"error": "Not authenticated", "capabilities": [], "has_webhook_caps": False}
+            
+        # Try to load from cache first
+        cache_file = os.path.join(self.snapshot_cache_dir, 'auth_cache.json')
+        try:
+            if os.path.exists(cache_file):
+                with open(cache_file, 'r') as f:
+                    cache_data = json.load(f)
+                    capabilities = cache_data.get('allowed', {}).get('capabilities', [])
+                    
+                    webhook_caps = [cap for cap in capabilities if 'Notification' in cap or 'notification' in cap.lower()]
+                    has_write_notifications = 'writeBucketNotifications' in capabilities
+                    has_read_notifications = 'readBucketNotifications' in capabilities
+                    
+                    return {
+                        "capabilities": capabilities,
+                        "webhook_capabilities": webhook_caps,
+                        "has_webhook_caps": has_write_notifications and has_read_notifications,
+                        "has_write_notifications": has_write_notifications,
+                        "has_read_notifications": has_read_notifications,
+                        "missing_for_webhooks": [
+                            cap for cap in ['writeBucketNotifications', 'readBucketNotifications'] 
+                            if cap not in capabilities
+                        ]
+                    }
+        except Exception as e:
+            logger.warning(f"Could not load capabilities from auth cache: {e}")
+            
+        return {"error": "Could not determine capabilities", "capabilities": [], "has_webhook_caps": False}
+        
     def _get_cache_key(self, endpoint, method, data=None, params=None):
         """Generate a cache key for an API request"""
         key_parts = [endpoint, method.lower()]
@@ -226,7 +293,13 @@ class BackblazeClient:
             if cached_response:
                 return cached_response
         
-        url = f"{self.api_url}/b2api/v2/{endpoint}"
+        # Use different API versions for different endpoints
+        if endpoint in ['b2_set_bucket_notification_rules', 'b2_get_bucket_notification_rules']:
+            api_version = 'v4'
+        else:
+            api_version = 'v2'
+        
+        url = f"{self.api_url}/b2api/{api_version}/{endpoint}"
         headers = {'Authorization': self.auth_token}
         
         try:
@@ -250,10 +323,26 @@ class BackblazeClient:
             
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 401:
-                # Token expired, try to authorize again and retry the request
-                logger.warning("Auth token expired, reauthorizing...")
-                if self.authorize():
-                    return self._make_api_request(endpoint, method, data, params, use_cache)
+                # Prevent infinite recursion by checking if we've already retried auth for this request
+                if retry_count == 0:  # Only retry auth once per request
+                    logger.warning("Auth token expired, reauthorizing...")
+                    self.clear_auth_cache()  # Clear cache to force fresh auth
+                    if self.authorize():
+                        logger.debug("Retrying request after re-authorization...")
+                        return self._make_api_request(endpoint, method, data, params, use_cache, retry_count + 1, max_retries)
+                    else:
+                        logger.error("Re-authorization failed")
+                        raise Exception("Failed to re-authorize with B2 API")
+                else:
+                    logger.error("Still getting 401 after re-authorization, aborting")
+                    raise Exception("Authentication failed even after retry")
+            elif e.response.status_code == 400:
+                # Bad request - log the detailed error response
+                try:
+                    error_detail = e.response.json()
+                    logger.error(f"B2 API 400 Bad Request for {endpoint}: {error_detail}")
+                except:
+                    logger.error(f"B2 API 400 Bad Request for {endpoint}: {e.response.text}")
             elif e.response.status_code == 503 and endpoint == 'b2_list_file_versions':
                 # Service temporarily unavailable, try to get a different API endpoint
                 logger.warning(f"Service temporarily unavailable (503) for {url}. Clearing auth cache and reauthorizing...")
@@ -268,6 +357,31 @@ class BackblazeClient:
                 logger.warning(f"Transient error {e.response.status_code} on attempt {retry_count}/{max_retries}. Retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
                 return self._make_api_request(endpoint, method, data, params, use_cache, retry_count, max_retries)
+            
+            # Handle specific 401 error cases for better debugging
+            if e.response.status_code == 401:
+                try:
+                    error_detail = e.response.json()
+                    error_code = error_detail.get('code', 'unknown')
+                    error_message = error_detail.get('message', 'Unknown auth error')
+                    
+                    if error_code == 'unauthorized':
+                        if endpoint in ['b2_set_bucket_notification_rules', 'b2_get_bucket_notification_rules']:
+                            logger.error(f"B2 API 401 Unauthorized for {endpoint}: {error_message}")
+                            logger.error("SOLUTION: Your application key lacks 'writeBucketNotifications' capability.")
+                            logger.error("Create a new application key with these capabilities:")
+                            logger.error("- listBuckets, listFiles, readFiles (basic operations)")
+                            logger.error("- writeBucketNotifications (for webhook configuration)")
+                            logger.error("- readBucketNotifications (for reading webhook rules)")
+                        else:
+                            logger.error(f"B2 API 401 Unauthorized for {endpoint}: {error_message}")
+                    elif error_code in ['bad_auth_token', 'expired_auth_token']:
+                        logger.error(f"B2 API 401 {error_code} for {endpoint}: {error_message}")
+                    else:
+                        logger.error(f"B2 API 401 {error_code} for {endpoint}: {error_message}")
+                        
+                except Exception:
+                    logger.error(f"B2 API 401 error for {endpoint} (could not parse error details)")
             
             logger.error(f"HTTP error in API request to {endpoint}: {str(e)}")
             raise
@@ -289,6 +403,115 @@ class BackblazeClient:
         """List all buckets in the account"""
         return self._make_api_request('b2_list_buckets', 'post', {"accountId": self.account_id})
         
+    def update_bucket_event_notifications(self, bucket_id, event_rules, bucket_type="allPrivate"):
+        """Update event notification rules for a specific bucket.
+
+        Args:
+            bucket_id (str): The ID of the bucket to update.
+            event_rules (list): A list of event notification rule objects.
+                                An empty list disables notifications.
+                                Each rule should be a dictionary, e.g.:
+                                {
+                                    'eventName': 'b2:ObjectCreated:*', (or other desired events)
+                                    'webhookUrl': 'YOUR_WEBHOOK_ENDPOINT',
+                                    'signingSecret': {
+                                        'secretName': 'YOUR_SECRET_NAME_IN_B2', (optional, B2 might auto-create if not specified)
+                                        'secretValue': 'YOUR_ACTUAL_SECRET_VALUE'
+                                    }
+                                }
+                                Or, if B2 handles secret creation/management for you by just passing the URL:
+                                {
+                                    'eventName': 'b2:ObjectCreated:*',
+                                    'webhookUrl': 'YOUR_WEBHOOK_ENDPOINT'
+                                }
+                                Refer to B2 b2_update_bucket API for exact structure for eventNotificationRules.
+                                For this client, we expect the full rule structure if a secret is involved.
+
+        Returns:
+            dict: The API response from b2_update_bucket.
+        """
+        if not self.account_id:
+            logger.error("Account ID not available. Cannot update bucket event notifications.")
+            raise Exception("B2 Client not fully authorized (no accountId)")
+
+        # First, get existing bucket details to preserve other properties
+        try:
+            existing_bucket_response = self._make_api_request('b2_list_buckets', 'post', {
+                "accountId": self.account_id,
+                "bucketId": bucket_id
+            })
+            
+            if not existing_bucket_response or not existing_bucket_response.get('buckets'):
+                logger.error(f"Could not fetch existing bucket details for {bucket_id}")
+                # Fallback to minimal payload
+                existing_bucket = {}
+            else:
+                existing_bucket = existing_bucket_response['buckets'][0]
+                logger.debug(f"Fetched existing bucket details for {bucket_id}: {existing_bucket.get('bucketName', 'unknown')}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch existing bucket details for {bucket_id}: {e}. Using minimal payload.")
+            existing_bucket = {}
+
+        payload = {
+            "accountId": self.account_id,
+            "bucketId": bucket_id,
+            "eventNotificationRules": event_rules,
+            "bucketType": existing_bucket.get("bucketType", bucket_type)
+        }
+        
+        # Preserve other existing bucket properties if they exist
+        if existing_bucket.get("bucketInfo"):
+            payload["bucketInfo"] = existing_bucket["bucketInfo"]
+        if existing_bucket.get("corsRules"):
+            payload["corsRules"] = existing_bucket["corsRules"]
+        if existing_bucket.get("lifecycleRules"):
+            payload["lifecycleRules"] = existing_bucket["lifecycleRules"]
+        if existing_bucket.get("revision"):
+            payload["ifRevisionIs"] = existing_bucket["revision"]
+            
+        logger.info(f"Updating eventNotificationRules for bucket {bucket_id} with rules: {json.dumps(event_rules)}")
+        logger.debug(f"Full b2_update_bucket payload: {json.dumps(payload)}")
+        # b2_update_bucket is a sensitive operation, so no client-side caching (use_cache=False implicit for POST)
+        return self._make_api_request('b2_update_bucket', method='post', data=payload)
+        
+    def set_bucket_notification_rules(self, bucket_id, event_rules):
+        """Set event notification rules for a specific bucket using the dedicated B2 API.
+
+        Args:
+            bucket_id (str): The ID of the bucket to configure.
+            event_rules (list): A list of event notification rule objects.
+                                An empty list disables all notifications.
+                                Each rule should follow B2's API structure.
+
+        Returns:
+            dict: The API response from b2_set_bucket_notification_rules.
+        """
+        if not self.account_id:
+            logger.error("Account ID not available. Cannot set bucket event notifications.")
+            raise Exception("B2 Client not fully authorized (no accountId)")
+
+        payload = {
+            "bucketId": bucket_id,
+            "eventNotificationRules": event_rules
+        }
+            
+        logger.info(f"Setting eventNotificationRules for bucket {bucket_id} with {len(event_rules)} rules")
+        logger.debug(f"b2_set_bucket_notification_rules payload: {json.dumps(payload)}")
+        
+        # Use the dedicated notification rules endpoint
+        return self._make_api_request('b2_set_bucket_notification_rules', method='post', data=payload)
+        
+    def get_bucket_notification_rules(self, bucket_id):
+        """Get event notification rules for a specific bucket."""
+        if not self.account_id:
+            logger.error("Account ID not available. Cannot get bucket event notifications.")
+            raise Exception("B2 Client not fully authorized (no accountId)")
+
+        params = {"bucketId": bucket_id} # As per B2 docs for b2_get_bucket_notification_rules
+        logger.info(f"Getting eventNotificationRules for bucket {bucket_id} via GET")
+        # b2_get_bucket_notification_rules is a GET request according to B2 documentation.
+        return self._make_api_request('b2_get_bucket_notification_rules', method='get', params=params)
+
     def get_bucket_usage(self, bucket_id, bucket_name, progress_callback=None):
         """Get usage statistics for a specific bucket with caching, using the object metadata cache settings."""
         
@@ -592,11 +815,11 @@ class BackblazeClient:
                 progress_callback("BUCKET_ERROR", {"bucket_name": bucket_name, "error": str(e)})
             return None # Or raise to be caught by the main snapshot loop
 
-    def take_snapshot(self, snapshot_name_unused, progress_callback=None, account_info=None, completed_buckets=None): # Added completed_buckets parameter
+    def take_snapshot(self, *, snapshot_name=None, progress_callback=None, account_info=None, completed_buckets=None): # Changed signature
         """Take a snapshot of the current account usage and costs with optimized data collection
         
         Args:
-            snapshot_name_unused: A name for the snapshot (used for display purposes)
+            snapshot_name: A name for the snapshot (used for display purposes, though B2 client might not use it directly in API calls for snapshot creation itself)
             progress_callback: Optional callback function for progress reporting
             account_info: Optional account information to avoid re-fetching
             completed_buckets: Optional dictionary of already completed buckets to skip (for resuming)

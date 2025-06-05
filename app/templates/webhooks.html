@@ -1,0 +1,524 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">Webhook Management</h1>
+</div>
+
+<!-- Flash Messages -->
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+            <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
+<!-- Webhook Configuration Info -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Webhook Configuration</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-8">
+                        <p><strong>Webhook URL:</strong></p>
+                        <code id="webhook-url">{{ webhook_url_info.webhook_url }}</code>
+                        <button class="btn btn-sm btn-outline-secondary ms-2" onclick="copyToClipboard('webhook-url')">
+                            Copy
+                        </button>
+                    </div>
+                    <div class="col-md-4">
+                        <p><strong>Supported Events:</strong></p>
+                        <ul class="list-unstyled">
+                            {% for event in webhook_url_info.supported_events %}
+                                <li><code>{{ event }}</code></li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Webhook Statistics -->
+{% if webhook_stats %}
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">{{ webhook_stats.total_events or 0 }}</h5>
+                <p class="card-text">Total Events</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">{{ webhook_stats.recent_events_24h or 0 }}</h5>
+                <p class="card-text">Last 24 Hours</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">{{ webhook_stats.active_buckets|length or 0 }}</h5>
+                <p class="card-text">Active Buckets</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">{{ webhook_stats.event_types|length or 0 }}</h5>
+                <p class="card-text">Event Types</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Add New Bucket Configuration -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Add New Bucket</h5>
+            </div>
+            <div class="card-body">
+                <form id="add-bucket-form">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label for="bucket-name" class="form-label">Bucket Name</label>
+                                <input type="text" class="form-control" id="bucket-name" required>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label class="form-label">Events to Track</label>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="event-created" value="b2:ObjectCreated" checked>
+                                    <label class="form-check-label" for="event-created">
+                                        Object Created
+                                    </label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="event-deleted" value="b2:ObjectDeleted" checked>
+                                    <label class="form-check-label" for="event-deleted">
+                                        Object Deleted
+                                    </label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="event-restored" value="b2:ObjectRestore">
+                                    <label class="form-check-label" for="event-restored">
+                                        Object Restored
+                                    </label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="event-archived" value="b2:ObjectArchive">
+                                    <label class="form-check-label" for="event-archived">
+                                        Object Archived
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label for="webhook-secret" class="form-label">Webhook Secret (optional)</label>
+                                <input type="text" class="form-control" id="webhook-secret" placeholder="Leave empty to auto-generate">
+                                <small class="form-text text-muted">Used for webhook signature verification</small>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Add Bucket Configuration</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Existing Bucket Configurations -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Bucket Configurations</h5>
+            </div>
+            <div class="card-body">
+                {% if bucket_configurations %}
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Bucket Name</th>
+                                    <th>Status</th>
+                                    <th>Events Tracked</th>
+                                    <th>Webhook Secret</th>
+                                    <th>Created</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="bucket-configurations-table">
+                                {% for config in bucket_configurations %}
+                                <tr data-bucket="{{ config.bucket_name }}">
+                                    <td><strong>{{ config.bucket_name }}</strong></td>
+                                    <td>
+                                        <span class="badge bg-{{ 'success' if config.webhook_enabled else 'secondary' }}">
+                                            {{ 'Enabled' if config.webhook_enabled else 'Disabled' }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        {% for event in config.events_to_track %}
+                                            <span class="badge bg-info me-1">{{ event.replace('b2:', '') }}</span>
+                                        {% endfor %}
+                                    </td>
+                                    <td>
+                                        {% if config.webhook_secret %}
+                                            <code class="text-muted">{{ config.webhook_secret[:8] }}...</code>
+                                            <button class="btn btn-sm btn-outline-secondary" onclick="showSecret('{{ config.bucket_name }}', '{{ config.webhook_secret }}')">
+                                                Show
+                                            </button>
+                                        {% else %}
+                                            <em>None</em>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ config.created_at[:10] }}</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-primary" onclick="editBucket('{{ config.bucket_name }}')">
+                                            Edit
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-danger" onclick="deleteBucket('{{ config.bucket_name }}')">
+                                            Delete
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="text-muted">No bucket configurations found. Add a bucket configuration above to get started.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Webhook Events -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">Recent Webhook Events</h5>
+                <button class="btn btn-sm btn-outline-primary" onclick="loadRecentEvents()">
+                    Refresh
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="recent-events-loading" class="text-center" style="display: none;">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+                <div id="recent-events-table"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Bucket Modal -->
+<div class="modal fade" id="editBucketModal" tabindex="-1" aria-labelledby="editBucketModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="editBucketModalLabel">Edit Bucket Configuration</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="edit-bucket-form">
+                    <input type="hidden" id="edit-bucket-name">
+                    <div class="mb-3">
+                        <label class="form-label">Enable Webhooks</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="edit-webhook-enabled">
+                            <label class="form-check-label" for="edit-webhook-enabled">
+                                Enable webhook events for this bucket
+                            </label>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Events to Track</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="edit-event-created" value="b2:ObjectCreated">
+                            <label class="form-check-label" for="edit-event-created">Object Created</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="edit-event-deleted" value="b2:ObjectDeleted">
+                            <label class="form-check-label" for="edit-event-deleted">Object Deleted</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="edit-event-restored" value="b2:ObjectRestore">
+                            <label class="form-check-label" for="edit-event-restored">Object Restored</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="edit-event-archived" value="b2:ObjectArchive">
+                            <label class="form-check-label" for="edit-event-archived">Object Archived</label>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="edit-webhook-secret" class="form-label">Webhook Secret</label>
+                        <input type="text" class="form-control" id="edit-webhook-secret" placeholder="Leave empty to keep existing">
+                        <small class="form-text text-muted">Leave empty to keep existing secret, or enter new one</small>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveEditBucket()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Show Secret Modal -->
+<div class="modal fade" id="showSecretModal" tabindex="-1" aria-labelledby="showSecretModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="showSecretModalLabel">Webhook Secret</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p><strong>Bucket:</strong> <span id="secret-bucket-name"></span></p>
+                <p><strong>Webhook Secret:</strong></p>
+                <code id="webhook-secret-display" class="d-block p-2 bg-light border rounded"></code>
+                <button class="btn btn-sm btn-outline-secondary mt-2" onclick="copyToClipboard('webhook-secret-display')">
+                    Copy Secret
+                </button>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Add bucket configuration
+document.getElementById('add-bucket-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const bucketName = document.getElementById('bucket-name').value;
+    const webhookSecret = document.getElementById('webhook-secret').value;
+    
+    const eventsToTrack = [];
+    document.querySelectorAll('#add-bucket-form input[type="checkbox"]:checked').forEach(cb => {
+        eventsToTrack.push(cb.value);
+    });
+    
+    if (eventsToTrack.length === 0) {
+        alert('Please select at least one event type to track.');
+        return;
+    }
+    
+    const data = {
+        webhook_enabled: true,
+        events_to_track: eventsToTrack,
+        webhook_secret: webhookSecret || null
+    };
+    
+    fetch(`/api/webhooks/buckets/${encodeURIComponent(bucketName)}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.message) {
+            location.reload(); // Refresh page to show new configuration
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        alert('Error: ' + error.message);
+    });
+});
+
+// Edit bucket configuration
+function editBucket(bucketName) {
+    fetch(`/api/webhooks/buckets/${encodeURIComponent(bucketName)}`)
+    .then(response => response.json())
+    .then(config => {
+        document.getElementById('edit-bucket-name').value = bucketName;
+        document.getElementById('edit-webhook-enabled').checked = config.webhook_enabled;
+        
+        // Clear all checkboxes first
+        document.querySelectorAll('#edit-bucket-form input[type="checkbox"][value^="b2:"]').forEach(cb => {
+            cb.checked = false;
+        });
+        
+        // Check the events that are being tracked
+        config.events_to_track.forEach(event => {
+            const checkbox = document.querySelector(`#edit-bucket-form input[value="${event}"]`);
+            if (checkbox) checkbox.checked = true;
+        });
+        
+        new bootstrap.Modal(document.getElementById('editBucketModal')).show();
+    })
+    .catch(error => {
+        alert('Error loading bucket configuration: ' + error.message);
+    });
+}
+
+// Save edited bucket configuration
+function saveEditBucket() {
+    const bucketName = document.getElementById('edit-bucket-name').value;
+    const webhookEnabled = document.getElementById('edit-webhook-enabled').checked;
+    const webhookSecret = document.getElementById('edit-webhook-secret').value;
+    
+    const eventsToTrack = [];
+    document.querySelectorAll('#edit-bucket-form input[type="checkbox"][value^="b2:"]:checked').forEach(cb => {
+        eventsToTrack.push(cb.value);
+    });
+    
+    const data = {
+        webhook_enabled: webhookEnabled,
+        events_to_track: eventsToTrack,
+        webhook_secret: webhookSecret || undefined
+    };
+    
+    fetch(`/api/webhooks/buckets/${encodeURIComponent(bucketName)}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.message) {
+            bootstrap.Modal.getInstance(document.getElementById('editBucketModal')).hide();
+            location.reload();
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        alert('Error: ' + error.message);
+    });
+}
+
+// Delete bucket configuration
+function deleteBucket(bucketName) {
+    if (confirm(`Are you sure you want to delete the webhook configuration for bucket "${bucketName}"?`)) {
+        fetch(`/api/webhooks/buckets/${encodeURIComponent(bucketName)}`, {
+            method: 'DELETE'
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.message) {
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            alert('Error: ' + error.message);
+        });
+    }
+}
+
+// Show webhook secret
+function showSecret(bucketName, secret) {
+    document.getElementById('secret-bucket-name').textContent = bucketName;
+    document.getElementById('webhook-secret-display').textContent = secret;
+    new bootstrap.Modal(document.getElementById('showSecretModal')).show();
+}
+
+// Copy to clipboard
+function copyToClipboard(elementId) {
+    const element = document.getElementById(elementId);
+    const text = element.textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        // Show temporary success message
+        const originalText = element.parentElement.innerHTML;
+        element.parentElement.innerHTML = '<span class="text-success">Copied!</span>';
+        setTimeout(() => {
+            element.parentElement.innerHTML = originalText;
+        }, 2000);
+    });
+}
+
+// Load recent events
+function loadRecentEvents() {
+    document.getElementById('recent-events-loading').style.display = 'block';
+    document.getElementById('recent-events-table').innerHTML = '';
+    
+    fetch('/api/webhooks/events?limit=50')
+    .then(response => response.json())
+    .then(data => {
+        document.getElementById('recent-events-loading').style.display = 'none';
+        
+        if (data.events && data.events.length > 0) {
+            let html = `
+                <div class="table-responsive">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Bucket</th>
+                                <th>Event Type</th>
+                                <th>Object Key</th>
+                                <th>Size</th>
+                                <th>Source IP</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+            `;
+            
+            data.events.forEach(event => {
+                const eventTime = new Date(event.timestamp).toLocaleString();
+                const objectKey = event.object_key ? (event.object_key.length > 50 ? event.object_key.substring(0, 50) + '...' : event.object_key) : '-';
+                const size = event.object_size ? (event.object_size / 1024).toFixed(1) + ' KB' : '-';
+                
+                html += `
+                    <tr>
+                        <td>${eventTime}</td>
+                        <td><strong>${event.bucket_name}</strong></td>
+                        <td><span class="badge bg-info">${event.event_type.replace('b2:', '')}</span></td>
+                        <td><code>${objectKey}</code></td>
+                        <td>${size}</td>
+                        <td>${event.source_ip || '-'}</td>
+                    </tr>
+                `;
+            });
+            
+            html += '</tbody></table></div>';
+            document.getElementById('recent-events-table').innerHTML = html;
+        } else {
+            document.getElementById('recent-events-table').innerHTML = '<p class="text-muted">No recent webhook events found.</p>';
+        }
+    })
+    .catch(error => {
+        document.getElementById('recent-events-loading').style.display = 'none';
+        document.getElementById('recent-events-table').innerHTML = '<p class="text-danger">Error loading events: ' + error.message + '</p>';
+    });
+}
+
+// Load recent events on page load
+document.addEventListener('DOMContentLoaded', function() {
+    loadRecentEvents();
+});
+</script>
+{% endblock %} 

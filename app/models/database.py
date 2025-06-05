@@ -2,15 +2,20 @@ import sqlite3
 import json
 from datetime import datetime, timedelta
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self, db_path):
         """Initialize database connection"""
         self.db_path = db_path
+        logger.info(f"Database class initialized with db_path: {self.db_path}")
         self._create_tables_if_not_exist()
 
     def _get_connection(self):
         """Get a database connection"""
+        logger.info(f"Attempting to connect to SQLite database at: {self.db_path} (UID: {os.geteuid()}, GID: {os.getegid()})")
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
@@ -62,6 +67,71 @@ class Database:
                 details TEXT NOT NULL,
                 recipients TEXT,
                 status TEXT NOT NULL
+            )
+            ''')
+            
+            # Webhook events table for storing Backblaze object events
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS webhook_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_timestamp TEXT NOT NULL,
+                bucket_name TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                object_key TEXT,
+                object_size INTEGER,
+                object_version_id TEXT,
+                source_ip TEXT,
+                user_agent TEXT,
+                request_id TEXT,
+                raw_payload TEXT NOT NULL,
+                processed BOOLEAN DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            ''')
+            
+            # Bucket configurations table for webhook settings
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bucket_configurations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bucket_name TEXT NOT NULL UNIQUE,
+                webhook_enabled BOOLEAN DEFAULT 0,
+                webhook_secret TEXT,
+                events_to_track TEXT NOT NULL DEFAULT '["b2:ObjectCreated", "b2:ObjectDeleted"]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            ''')
+            
+            # Webhook statistics table for tracking webhook activity
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS webhook_statistics (
+                date TEXT NOT NULL,
+                bucket_name TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                event_count INTEGER DEFAULT 0,
+                PRIMARY KEY (date, bucket_name, event_type)
+            ) WITHOUT ROWID
+            ''')
+            
+            # B2 Buckets table to store canonical list of B2 buckets and their settings
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS b2_buckets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bucket_b2_id TEXT NOT NULL UNIQUE,
+                bucket_name TEXT NOT NULL UNIQUE,
+                account_b2_id TEXT,
+                bucket_type TEXT,
+                cors_rules TEXT,
+                event_notification_rules TEXT,
+                lifecycle_rules TEXT,
+                bucket_info TEXT,
+                options TEXT,
+                file_lock_configuration TEXT,
+                default_server_side_encryption TEXT,
+                replication_configuration TEXT,
+                revision INTEGER,
+                last_synced_at TEXT NOT NULL
             )
             ''')
             
@@ -432,3 +502,526 @@ class Database:
                 
         except Exception as e:
             raise Exception(f"Error saving schedule settings: {str(e)}")
+
+    # Webhook-related methods
+    
+    def save_webhook_event(self, webhook_data):
+        """Save a webhook event from Backblaze
+        
+        Args:
+            webhook_data (dict): The webhook event data
+            
+        Returns:
+            int: The ID of the inserted webhook event
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            current_time = datetime.now().isoformat()
+            
+            # Convert B2's eventTimestamp (milliseconds since epoch) to ISO format
+            event_timestamp_iso = current_time  # default fallback
+            if 'eventTimestamp' in webhook_data:
+                try:
+                    # B2 sends eventTimestamp as milliseconds since epoch
+                    timestamp_ms = int(webhook_data['eventTimestamp'])
+                    timestamp_dt = datetime.fromtimestamp(timestamp_ms / 1000.0)
+                    event_timestamp_iso = timestamp_dt.isoformat()
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Could not parse eventTimestamp {webhook_data.get('eventTimestamp')}: {e}")
+                    # Keep current_time as fallback
+            
+            cursor.execute('''
+            INSERT INTO webhook_events (
+                timestamp, event_timestamp, bucket_name, event_type,
+                object_key, object_size, object_version_id,
+                source_ip, user_agent, request_id, raw_payload,
+                processed, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                event_timestamp_iso,  # Use converted timestamp
+                event_timestamp_iso,  # Use converted timestamp  
+                webhook_data.get('bucketName', ''),
+                webhook_data.get('eventType', ''),
+                webhook_data.get('objectName'),
+                webhook_data.get('objectSize'),
+                webhook_data.get('objectVersionId'),
+                webhook_data.get('sourceIpAddress'),
+                webhook_data.get('userAgent'),
+                webhook_data.get('eventId'),
+                json.dumps(webhook_data),
+                False,
+                current_time
+            ))
+            
+            event_id = cursor.lastrowid
+            
+            # Update webhook statistics
+            date_str = datetime.now().strftime('%Y-%m-%d')
+            cursor.execute('''
+            INSERT OR REPLACE INTO webhook_statistics (date, bucket_name, event_type, event_count)
+            VALUES (?, ?, ?, COALESCE((
+                SELECT event_count FROM webhook_statistics 
+                WHERE date = ? AND bucket_name = ? AND event_type = ?
+            ), 0) + 1)
+            ''', (
+                date_str, webhook_data.get('bucketName', ''), 
+                webhook_data.get('eventType', ''),
+                date_str, webhook_data.get('bucketName', ''), 
+                webhook_data.get('eventType', '')
+            ))
+            
+            conn.commit()
+            return event_id
+
+    def get_webhook_events(self, limit=100, bucket_name=None, event_type=None):
+        """Get webhook events with optional filtering
+        
+        Args:
+            limit (int): Maximum number of events to retrieve
+            bucket_name (str): Filter by bucket name
+            event_type (str): Filter by event type
+            
+        Returns:
+            list: List of webhook event records
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            query = 'SELECT * FROM webhook_events WHERE 1=1'
+            params = []
+            
+            if bucket_name:
+                query += ' AND bucket_name = ?'
+                params.append(bucket_name)
+                
+            if event_type:
+                query += ' AND event_type = ?'
+                params.append(event_type)
+                
+            query += ' ORDER BY created_at DESC LIMIT ?'
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_webhook_statistics(self, days=30):
+        """Get webhook statistics for the past specified number of days
+        
+        Args:
+            days (int): Number of days to retrieve statistics for
+            
+        Returns:
+            list: List of webhook statistics
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+            
+            cursor.execute('''
+            SELECT date, bucket_name, event_type, event_count
+            FROM webhook_statistics
+            WHERE date >= ?
+            ORDER BY date DESC, bucket_name, event_type
+            ''', (start_date,))
+            
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_bucket_configuration(self, bucket_name):
+        """Get webhook configuration for a specific bucket
+        
+        Args:
+            bucket_name (str): Name of the bucket
+            
+        Returns:
+            dict: Bucket configuration or None if not found
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+            SELECT * FROM bucket_configurations
+            WHERE bucket_name = ?
+            ''', (bucket_name,))
+            
+            row = cursor.fetchone()
+            if row:
+                config = dict(row)
+                config['events_to_track'] = json.loads(config['events_to_track'])
+                return config
+            return None
+
+    def save_bucket_configuration(self, bucket_name, webhook_enabled=False, webhook_secret=None, events_to_track=None):
+        """Save or update webhook configuration for a bucket
+        
+        Args:
+            bucket_name (str): Name of the bucket
+            webhook_enabled (bool): Whether webhooks are enabled
+            webhook_secret (str): Secret for webhook verification
+            events_to_track (list): List of event types to track
+            
+        Returns:
+            bool: True if saved successfully
+        """
+        if events_to_track is None:
+            events_to_track = ["b2:ObjectCreated", "b2:ObjectDeleted"]
+            
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            current_time = datetime.now().isoformat()
+            
+            cursor.execute('''
+            INSERT OR REPLACE INTO bucket_configurations (
+                bucket_name, webhook_enabled, webhook_secret, events_to_track,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 
+                COALESCE((SELECT created_at FROM bucket_configurations WHERE bucket_name = ?), ?),
+                ?
+            )
+            ''', (
+                bucket_name, webhook_enabled, webhook_secret, json.dumps(events_to_track),
+                bucket_name, current_time, current_time
+            ))
+            
+            conn.commit()
+            return True
+
+    def get_all_bucket_configurations(self):
+        """Get all bucket configurations
+        
+        Returns:
+            list: List of all bucket configurations
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+            SELECT * FROM bucket_configurations
+            ORDER BY bucket_name
+            ''')
+            
+            configs = []
+            for row in cursor.fetchall():
+                config = dict(row)
+                config['events_to_track'] = json.loads(config['events_to_track'])
+                configs.append(config)
+                
+            return configs
+
+    def delete_bucket_configuration(self, bucket_name):
+        """Delete webhook configuration for a bucket
+        
+        Args:
+            bucket_name (str): Name of the bucket
+            
+        Returns:
+            bool: True if deleted successfully
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+            DELETE FROM bucket_configurations
+            WHERE bucket_name = ?
+            ''', (bucket_name,))
+            
+            conn.commit()
+            return cursor.rowcount > 0
+
+    # Methods for the b2_buckets table
+    def save_b2_bucket_details(self, bucket_details_list):
+        """Save or update a list of B2 bucket details.
+        
+        Args:
+            bucket_details_list (list): A list of dictionaries, where each dictionary
+                                     contains the details of a B2 bucket.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            current_time = datetime.now().isoformat()
+            
+            for bucket in bucket_details_list:
+                logger.debug(f"Saving/Updating B2 bucket details for: {bucket.get('bucketName')}")
+                cursor.execute('''
+                    INSERT OR REPLACE INTO b2_buckets (
+                        bucket_b2_id, bucket_name, account_b2_id, bucket_type,
+                        cors_rules, event_notification_rules, lifecycle_rules,
+                        bucket_info, options, file_lock_configuration,
+                        default_server_side_encryption, replication_configuration,
+                        revision, last_synced_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    bucket.get('bucketId'),
+                    bucket.get('bucketName'),
+                    bucket.get('accountId'),
+                    bucket.get('bucketType'),
+                    json.dumps(bucket.get('corsRules', [])),
+                    json.dumps(bucket.get('eventNotificationRules', [])),
+                    json.dumps(bucket.get('lifecycleRules', [])),
+                    json.dumps(bucket.get('bucketInfo', {})),
+                    json.dumps(bucket.get('options', {})), # New field from B2 API v3
+                    json.dumps(bucket.get('fileLockConfiguration', {})), # New field from B2 API v3
+                    json.dumps(bucket.get('defaultServerSideEncryption', {})), # New field from B2 API v3
+                    json.dumps(bucket.get('replicationConfiguration', {})), # New field from B2 API v3
+                    bucket.get('revision'),
+                    current_time
+                ))
+            conn.commit()
+            logger.info(f"Successfully saved/updated details for {len(bucket_details_list)} B2 buckets.")
+
+    def get_all_b2_buckets(self):
+        """Get all B2 buckets from the b2_buckets table, joined with local webhook configuration."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            # Join b2_buckets with bucket_configurations to get webhook_secret and webhook_enabled status
+            # Use LEFT JOIN to ensure all buckets from b2_buckets are listed, even if no local config exists yet.
+            cursor.execute("""
+                SELECT b.*, bc.webhook_enabled, bc.webhook_secret, bc.events_to_track
+                FROM b2_buckets b
+                LEFT JOIN bucket_configurations bc ON b.bucket_name = bc.bucket_name
+                ORDER BY b.bucket_name
+            """)
+            buckets = [dict(row) for row in cursor.fetchall()]
+            # Deserialize JSON fields
+            for bucket in buckets:
+                for field in ['cors_rules', 'event_notification_rules', 'lifecycle_rules', 'bucket_info', 'options', 'file_lock_configuration', 'default_server_side_encryption', 'replication_configuration']:
+                    if bucket.get(field) and isinstance(bucket[field], str): # Check if it's a string before trying to load
+                        try:
+                            bucket[field] = json.loads(bucket[field])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to decode JSON for field {field} in bucket {bucket.get('bucket_name')}")
+                            bucket[field] = None 
+                # Ensure events_to_track is also deserialized if it came from bucket_configurations
+                if bucket.get('events_to_track') and isinstance(bucket['events_to_track'], str):
+                    try:
+                        bucket['events_to_track'] = json.loads(bucket['events_to_track'])
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to decode JSON for field events_to_track in bucket {bucket.get('bucket_name')}")
+                        bucket['events_to_track'] = []
+                elif bucket.get('events_to_track') is None: # If no local config, default to empty list
+                    bucket['events_to_track'] = []
+
+            return buckets
+
+    def get_b2_bucket_by_name(self, bucket_name):
+        """Get a specific B2 bucket by its name."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM b2_buckets WHERE bucket_name = ?", (bucket_name,))
+            row = cursor.fetchone()
+            if row:
+                bucket = dict(row)
+                # Deserialize JSON fields
+                for field in ['cors_rules', 'event_notification_rules', 'lifecycle_rules', 'bucket_info', 'options', 'file_lock_configuration', 'default_server_side_encryption', 'replication_configuration']:
+                    if bucket.get(field):
+                        try:
+                            bucket[field] = json.loads(bucket[field])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to decode JSON for field {field} in bucket {bucket.get('bucket_name')}")
+                            bucket[field] = None
+                return bucket
+            return None
+
+    def get_b2_bucket_by_b2_id(self, bucket_b2_id):
+        """Get a specific B2 bucket by its B2 bucket ID."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM b2_buckets WHERE bucket_b2_id = ?", (bucket_b2_id,))
+            row = cursor.fetchone()
+            if row:
+                bucket = dict(row)
+                # Deserialize JSON fields (same as get_b2_bucket_by_name)
+                for field in ['cors_rules', 'event_notification_rules', 'lifecycle_rules', 'bucket_info', 'options', 'file_lock_configuration', 'default_server_side_encryption', 'replication_configuration']:
+                    if bucket.get(field):
+                        try:
+                            bucket[field] = json.loads(bucket[field])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to decode JSON for field {field} in bucket {bucket.get('bucket_name')} (ID: {bucket_b2_id})")
+                            bucket[field] = None # Or some default, like {} or []
+                return bucket
+            return None
+
+    # Alias kept for backward compatibility with earlier code paths
+    def get_b2_bucket_by_id(self, bucket_b2_id):
+        """Alias to get_b2_bucket_by_b2_id for legacy callers."""
+        return self.get_b2_bucket_by_b2_id(bucket_b2_id)
+
+    # --- Dashboard Specific Methods ---
+    def get_object_operation_stats_for_period(self, start_date_str, end_date_str, bucket_name=None):
+        """Calculate object operation statistics for a given period and optional bucket."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Build the WHERE clause
+            where_clause = "WHERE event_timestamp >= ? AND event_timestamp <= ?"
+            params = [start_date_str, end_date_str]
+            
+            if bucket_name:
+                where_clause += " AND bucket_name = ?"
+                params.append(bucket_name)
+
+            # Objects Added - Fixed SQL syntax with proper subquery
+            added_query = f"""
+                SELECT COUNT(*), COALESCE(SUM(object_size), 0) 
+                FROM (
+                    SELECT DISTINCT request_id, object_size 
+                    FROM webhook_events 
+                    {where_clause} AND event_type LIKE 'b2:ObjectCreated:%'
+                )
+            """
+            cursor.execute(added_query, params)
+            added_row = cursor.fetchone()
+            objects_added = added_row[0] if added_row and added_row[0] is not None else 0
+            size_added = added_row[1] if added_row and added_row[1] is not None else 0
+
+            # Objects Deleted - Fixed SQL syntax with proper subquery
+            deleted_query = f"""
+                SELECT COUNT(*), COALESCE(SUM(object_size), 0) 
+                FROM (
+                    SELECT DISTINCT request_id, object_size 
+                    FROM webhook_events 
+                    {where_clause} AND event_type LIKE 'b2:ObjectDeleted:%'
+                )
+            """
+            cursor.execute(deleted_query, params)
+            deleted_row = cursor.fetchone()
+            objects_deleted = deleted_row[0] if deleted_row and deleted_row[0] is not None else 0
+            size_deleted = deleted_row[1] if deleted_row and deleted_row[1] is not None else 0
+            
+            return {
+                'objects_added': objects_added,
+                'size_added': size_added,
+                'objects_deleted': objects_deleted,
+                'size_deleted': size_deleted,
+                'net_object_change': objects_added - objects_deleted,
+                'net_size_change': size_added - size_deleted,
+                'start_date': start_date_str,
+                'end_date': end_date_str,
+                'bucket_name_filter': bucket_name
+            }
+
+    def get_daily_object_operation_breakdown(self, start_date_str, end_date_str, bucket_name=None):
+        """Get a daily breakdown of object operations."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            results = [] 
+            # Ensure we iterate through all days in the range for complete data
+            try:
+                current_date = datetime.fromisoformat(start_date_str.split('T')[0])
+                end_date_obj = datetime.fromisoformat(end_date_str.split('T')[0])
+            except ValueError:
+                 # Fallback if only date string is provided without time
+                current_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+                end_date_obj = datetime.strptime(end_date_str, '%Y-%m-%d')
+
+            while current_date <= end_date_obj:
+                day_start = current_date.strftime('%Y-%m-%dT00:00:00')
+                day_end = current_date.strftime('%Y-%m-%dT23:59:59.999999')
+                
+                day_stats = self.get_object_operation_stats_for_period(day_start, day_end, bucket_name)
+                results.append({
+                    'date': current_date.strftime('%Y-%m-%d'),
+                    'objects_added': day_stats['objects_added'],
+                    'size_added': day_stats['size_added'],
+                    'objects_deleted': day_stats['objects_deleted'],
+                    'size_deleted': day_stats['size_deleted']
+                })
+                current_date += timedelta(days=1)
+            return results
+
+    def get_all_bucket_names_from_webhooks(self):
+        """Get a list of all unique bucket names that have webhook events."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT bucket_name FROM webhook_events ORDER BY bucket_name")
+            return [row['bucket_name'] for row in cursor.fetchall()]
+
+    def get_top_buckets_by_size(self, operation_type='added', limit=10, start_date_str=None, end_date_str=None):
+        """Get top N buckets by total data size for a given operation type and period."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if operation_type == 'added':
+                event_type_pattern = 'b2:ObjectCreated:%'
+            elif operation_type == 'removed':
+                event_type_pattern = 'b2:ObjectDeleted:%'
+            else:
+                raise ValueError("Invalid operation_type. Must be 'added' or 'removed'.")
+
+            query = "SELECT bucket_name, SUM(object_size) as total_size FROM webhook_events WHERE event_type LIKE ?"
+            params = [event_type_pattern]
+
+            if start_date_str and end_date_str:
+                query += " AND event_timestamp >= ? AND event_timestamp <= ?"
+                params.extend([start_date_str, end_date_str])
+            
+            query += " GROUP BY bucket_name HAVING total_size > 0 ORDER BY total_size DESC LIMIT ?"
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_top_buckets_by_object_count(self, operation_type='added', limit=10, start_date_str=None, end_date_str=None):
+        """Get top N buckets by total object count for a given operation type and period."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if operation_type == 'added':
+                event_type_pattern = 'b2:ObjectCreated:%'
+            elif operation_type == 'removed':
+                event_type_pattern = 'b2:ObjectDeleted:%'
+            else:
+                raise ValueError("Invalid operation_type. Must be 'added' or 'removed'.")
+
+            # Counting distinct request_id to count unique events more accurately
+            query = "SELECT bucket_name, COUNT(DISTINCT request_id) as total_objects FROM webhook_events WHERE event_type LIKE ?"
+            params = [event_type_pattern]
+
+            if start_date_str and end_date_str:
+                query += " AND event_timestamp >= ? AND event_timestamp <= ?"
+                params.extend([start_date_str, end_date_str])
+            
+            query += " GROUP BY bucket_name HAVING total_objects > 0 ORDER BY total_objects DESC LIMIT ?"
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_stale_buckets(self, limit=10, active_threshold_days=90):
+        """Get N buckets that have not had recent 'created' activity.
+           'Stale' is defined as no b2:ObjectCreated:* event within active_threshold_days.
+           Returns buckets ordered by the oldest last creation event (or those with no creation events first).
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get all known B2 bucket names (master list)
+            cursor.execute("SELECT DISTINCT bucket_name FROM b2_buckets ORDER BY bucket_name")
+            all_b2_bucket_names = [row['bucket_name'] for row in cursor.fetchall()]
+            
+            if not all_b2_bucket_names:
+                 # Fallback to webhook event buckets if b2_buckets is empty for some reason
+                cursor.execute("SELECT DISTINCT bucket_name FROM webhook_events ORDER BY bucket_name")
+                all_b2_bucket_names = [row['bucket_name'] for row in cursor.fetchall()]
+
+            bucket_last_creation = []
+            cutoff_date_str = (datetime.utcnow() - timedelta(days=active_threshold_days)).isoformat()
+
+            for bucket_name in all_b2_bucket_names:
+                cursor.execute("""
+                    SELECT MAX(event_timestamp) 
+                    FROM webhook_events 
+                    WHERE bucket_name = ? AND event_type LIKE 'b2:ObjectCreated:%'""", 
+                    (bucket_name,)
+                )
+                row = cursor.fetchone()
+                last_creation_timestamp = row[0] if row else None
+                
+                if last_creation_timestamp is None:
+                    # Buckets with no creation events are considered most stale
+                    bucket_last_creation.append({'bucket_name': bucket_name, 'last_creation_event': None, 'sort_key': '0'}) # Sort None first
+                elif last_creation_timestamp < cutoff_date_str:
+                    # Buckets whose last creation event is older than the threshold
+                    bucket_last_creation.append({'bucket_name': bucket_name, 'last_creation_event': last_creation_timestamp, 'sort_key': last_creation_timestamp})
+            
+            # Sort: None (no creation events) first, then by oldest timestamp
+            bucket_last_creation.sort(key=lambda x: x['sort_key'])
+            
+            return bucket_last_creation[:limit]

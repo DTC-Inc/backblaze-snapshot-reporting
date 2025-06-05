@@ -1,9 +1,22 @@
 #!/bin/sh
 set -e
 
+# Debug: Print current user and initial /data permissions
+echo "Entrypoint script running as: $(id)"
+echo "Initial permissions of /data:"
+ls -ld /data || echo "/data does not exist or cannot be listed initially"
+
+# Ensure /data is writable by appuser
+echo "Setting ownership of /data to appuser..."
+chown appuser:appuser /data
+echo "Permissions of /data after chown:"
+ls -ld /data
+
 # Initialize database
 echo "Initializing database..."
 python -m scripts.init_db /data/backblaze_snapshots.db
+echo "Contents and permissions of /data after db init:"
+ls -al /data
 
 # Check required packages
 echo "Checking required packages..."
