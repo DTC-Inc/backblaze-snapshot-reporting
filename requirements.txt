@@ -19,7 +19,7 @@ flask-socketio==5.3.6  # For WebSocket support
 eventlet==0.33.3  # WebSocket backend for production
 redis==4.5.4  # Compatible with Celery - downgraded from 5.0.1
 hiredis==2.2.3
-pymongo==4.6.1  # For MongoDB support (high-volume webhook events)
+pymongo==4.6.3  # For MongoDB support (high-volume webhook events)
 
 # Celery for async webhook processing
 celery==5.3.4
