@@ -16,7 +16,7 @@ humanize==4.0.0
 email-validator==1.2.1
 boto3==1.34.0  # For S3 API access to Backblaze B2
 flask-socketio==5.3.6  # For WebSocket support
-eventlet==0.33.3  # WebSocket backend for production
+eventlet==0.35.2  # WebSocket backend for production
 redis==4.5.4  # Compatible with Celery - downgraded from 5.0.1
 hiredis==2.2.3
 pymongo==4.6.1  # For MongoDB support (high-volume webhook events)
