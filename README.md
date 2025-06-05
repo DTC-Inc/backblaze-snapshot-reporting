@@ -2,23 +2,19 @@
 
 A Python web application that monitors Backblaze B2 usage and costs, helping you track spending and identify significant changes in your cloud storage expenses.
 
-## Features
+## ⚡ Features
 
-- Flexible snapshot scheduling (interval, daily, weekly, or monthly)
-- Cost breakdowns by bucket and service type (storage, downloads, API calls)
-- Detection of significant cost changes 
-- Email notifications for cost threshold alerts
-- Cost trends analysis
-- Automatic retention and cleanup of old snapshot data
-- Dockerized for easy deployment
-- Efficient API usage to minimize Backblaze charges
-- Data caching to reduce API calls
-- SQLite or PostgreSQL database for snapshot history
-- Real-time progress updates via WebSockets
-- **Real-time webhook integration** for Backblaze B2 object events
-- **Comprehensive webhook management** with per-bucket configuration
-- **Object-level activity tracking** for created, deleted, restored, and archived files
-- **Webhook event statistics and analytics**
+- **Automated Cost Tracking**: Scheduled snapshots of your Backblaze B2 usage and costs
+- **Cost Change Alerts**: Get notified when your costs change significantly
+- **Bucket-Level Analysis**: See which buckets are costing you the most
+- **Historical Trends**: Track cost changes over time with beautiful charts
+- **Webhook Event Monitoring**: Real-time monitoring of Backblaze object events
+- **Redis Buffering**: High-performance event buffering to reduce database writes
+- **Multiple Database Options**: SQLite (default) or MongoDB for high-volume operations
+- **Database Migration**: Built-in script to migrate from SQLite to MongoDB
+- **Responsive Web Interface**: Clean, modern UI that works on all devices
+- **Docker Support**: Easy deployment with Docker Compose
+- **S3 API Support**: Optional S3 API compatibility for enhanced performance
 
 ## Deployment Options
 
@@ -124,23 +120,77 @@ If you prefer to use local filesystem paths instead of Docker volumes:
 
 By default, the application uses SQLite, which is simple and requires no additional configuration.
 
-#### PostgreSQL
+#### MongoDB
 
-To use PostgreSQL instead of SQLite:
+To use MongoDB instead of SQLite:
 
-1. Set `USE_POSTGRES=true` in your `stack.env` file
-2. Configure the PostgreSQL settings:
+1. Set `USE_MONGODB=true` in your `stack.env` file
+2. Configure the MongoDB settings:
    ```
-   USE_POSTGRES=true
-   POSTGRES_USER=bbssr_user
-   POSTGRES_PASSWORD=secure_password_here
-   POSTGRES_DB=bbssr_db
+   USE_MONGODB=true
+   MONGODB_USER=bbssr_user
+   MONGODB_PASSWORD=secure_password_here
+   MONGODB_DB=bbssr_db
    ```
 
-If you're using external volumes for production, also create the PostgreSQL volume:
+If you're using external volumes for production, also create the MongoDB volume:
 ```
 docker volume create bbssr_db
 ```
+
+#### Migrating from SQLite to MongoDB
+
+If you're currently using SQLite and want to migrate to MongoDB for better performance with high-volume webhook events, the application includes a built-in migration script.
+
+**When to migrate:**
+- You experience database lock errors with high webhook volume
+- You need better performance for concurrent operations
+- You're processing more than 100 webhook events per second
+- You want to scale horizontally in the future
+
+**Quick migration steps:**
+
+1. **Enable MongoDB** in your stack configuration:
+   ```bash
+   # In stack.env, add:
+   USE_MONGODB=1
+   DATABASE_URI=mongodb://mongodb:27017/bbssr_db
+   ```
+
+2. **Start MongoDB** service:
+   ```bash
+   docker compose up -d mongodb
+   ```
+
+3. **Run migration dry-run** to see what will be migrated:
+   ```bash
+   docker exec bbssr_web python scripts/migrate_sqlite_to_mongodb.py --dry-run --verbose
+   ```
+
+4. **Backup your SQLite database**:
+   ```bash
+   docker exec bbssr_web cp /data/backblaze_snapshots.db /data/backups/backup_$(date +%Y%m%d_%H%M%S).db
+   ```
+
+5. **Run the migration**:
+   ```bash
+   docker exec bbssr_web python scripts/migrate_sqlite_to_mongodb.py --verbose
+   ```
+
+6. **Restart the application** with new configuration:
+   ```bash
+   docker compose up -d
+   ```
+
+For detailed migration instructions, troubleshooting, and rollback procedures, see [docs/MIGRATION_SQLITE_TO_MONGODB.md](docs/MIGRATION_SQLITE_TO_MONGODB.md).
+
+**Migration features:**
+- **Safe migration**: Dry-run mode to preview changes
+- **Batch processing**: Efficient handling of large datasets
+- **Progress tracking**: Real-time progress updates and statistics
+- **Error recovery**: Handles partial failures gracefully
+- **Data integrity**: Maintains foreign key relationships
+- **Rollback support**: Easy rollback to SQLite if needed
 
 ### Deploying with Portainer
 
@@ -150,7 +200,7 @@ The docker-compose configuration is compatible with Portainer. To deploy:
 2. Upload the docker-compose.yml file or paste its contents
 3. Set your environment variables:
    - For SQLite (default): Set `STACK_NAME=bbssr` and other required variables
-   - For PostgreSQL: Add `USE_POSTGRES=1` to enable the PostgreSQL service
+   - For MongoDB: Add `USE_MONGODB=1` to enable the MongoDB service
 4. Deploy the stack
 
 For persistent volumes in Portainer:
@@ -311,10 +361,10 @@ For detailed webhook setup instructions, see [docs/WEBHOOK_SETUP.md](docs/WEBHOO
 | PID | Process ID for the container user | 1000 |
 | GID | Group ID for the container user | 1000 |
 | DATA_PATH | Base path for local data storage | ./data |
-| USE_POSTGRES | Use PostgreSQL instead of SQLite | false |
-| POSTGRES_USER | PostgreSQL username | bbssr_user |
-| POSTGRES_PASSWORD | PostgreSQL password | - |
-| POSTGRES_DB | PostgreSQL database name | bbssr_db |
+| USE_MONGODB | Use MongoDB instead of SQLite | false |
+| MONGODB_USER | MongoDB username | bbssr_user |
+| MONGODB_PASSWORD | MongoDB password | - |
+| MONGODB_DB | MongoDB database name | bbssr_db |
 | B2_APPLICATION_KEY_ID | Backblaze B2 Application Key ID | - |
 | B2_APPLICATION_KEY | Backblaze B2 Application Key | - |
 | USE_ACCURATE_BUCKET_SIZE | Use accurate but potentially slower bucket size calculation | True |

@@ -1,6 +1,6 @@
 import sqlite3
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import logging
 
@@ -136,6 +136,38 @@ class Database:
             ''')
             
             conn.commit()
+            
+            # Create performance indexes for frequently queried columns
+            try:
+                # Webhook events indexes
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_webhook_events_timestamp ON webhook_events(timestamp DESC)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_webhook_events_bucket_name ON webhook_events(bucket_name)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_webhook_events_event_type ON webhook_events(event_type)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_webhook_events_created_at ON webhook_events(created_at DESC)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_webhook_events_bucket_type ON webhook_events(bucket_name, event_type)')
+                
+                # Snapshots indexes
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON snapshots(timestamp DESC)')
+                
+                # Bucket snapshots indexes  
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_bucket_snapshots_snapshot_id ON bucket_snapshots(snapshot_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_bucket_snapshots_bucket_name ON bucket_snapshots(bucket_name)')
+                
+                # Bucket configurations indexes
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_bucket_configurations_bucket_name ON bucket_configurations(bucket_name)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_bucket_configurations_webhook_enabled ON bucket_configurations(webhook_enabled)')
+                
+                # B2 buckets indexes
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_b2_buckets_bucket_b2_id ON b2_buckets(bucket_b2_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_b2_buckets_bucket_name ON b2_buckets(bucket_name)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_b2_buckets_last_synced ON b2_buckets(last_synced_at DESC)')
+                
+                conn.commit()
+                logger.info("Database performance indexes created successfully")
+                
+            except Exception as e:
+                logger.warning(f"Could not create some database indexes (this is normal for existing databases): {e}")
+                # Don't fail if indexes already exist or there are other issues
 
     def save_snapshot(self, snapshot_data):
         """Save a new snapshot of Backblaze usage data"""
@@ -517,34 +549,64 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
-            current_time = datetime.now().isoformat()
+            # Convert event timestamp to ISO format for consistency
+            event_timestamp_str = webhook_data.get('eventTimestamp', '')
+            event_timestamp_iso = None
             
-            # Convert B2's eventTimestamp (milliseconds since epoch) to ISO format
-            event_timestamp_iso = current_time  # default fallback
-            if 'eventTimestamp' in webhook_data:
+            if event_timestamp_str:
                 try:
-                    # B2 sends eventTimestamp as milliseconds since epoch
-                    timestamp_ms = int(webhook_data['eventTimestamp'])
-                    timestamp_dt = datetime.fromtimestamp(timestamp_ms / 1000.0)
+                    # B2 eventTimestamp is in milliseconds since epoch
+                    if isinstance(event_timestamp_str, (int, float)):
+                        timestamp_dt = datetime.fromtimestamp(event_timestamp_str / 1000.0, tz=timezone.utc)
+                    elif isinstance(event_timestamp_str, str):
+                        # Try parsing as ISO string first
+                        try:
+                            timestamp_dt = datetime.fromisoformat(event_timestamp_str.replace('Z', '+00:00'))
+                        except ValueError:
+                            # Fallback: assume it's milliseconds as string
+                            timestamp_dt = datetime.fromtimestamp(int(event_timestamp_str) / 1000.0, tz=timezone.utc)
+                    else:
+                        timestamp_dt = datetime.now(timezone.utc)
+                        
                     event_timestamp_iso = timestamp_dt.isoformat()
                 except (ValueError, TypeError) as e:
-                    logger.warning(f"Could not parse eventTimestamp {webhook_data.get('eventTimestamp')}: {e}")
-                    # Keep current_time as fallback
+                    logger.warning(f"Error parsing event timestamp '{event_timestamp_str}': {e}")
+                    event_timestamp_iso = datetime.now(timezone.utc).isoformat()
+            else:
+                event_timestamp_iso = datetime.now(timezone.utc).isoformat()
+            
+            current_time = datetime.now().isoformat()
+            
+            # Handle object_size conversion and validation
+            object_size = webhook_data.get('objectSize')
+            if object_size is not None:
+                try:
+                    # Convert to integer, handle string numbers
+                    object_size = int(object_size)
+                    # Ensure non-negative values
+                    if object_size < 0:
+                        logger.warning(f"Negative object_size ({object_size}) received, setting to 0")
+                        object_size = 0
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid object_size value '{object_size}': {e}. Setting to 0.")
+                    object_size = 0
+            else:
+                # B2 might not send objectSize for some event types (e.g., bucket events)
+                object_size = 0
+                logger.debug(f"No objectSize in webhook data for event type: {webhook_data.get('eventType')}")
             
             cursor.execute('''
             INSERT INTO webhook_events (
-                timestamp, event_timestamp, bucket_name, event_type,
-                object_key, object_size, object_version_id,
-                source_ip, user_agent, request_id, raw_payload,
-                processed, created_at
+                timestamp, event_timestamp, bucket_name, event_type, object_key,
+                object_size, object_version_id, source_ip, user_agent, request_id,
+                raw_payload, processed, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                event_timestamp_iso,  # Use converted timestamp
                 event_timestamp_iso,  # Use converted timestamp  
                 webhook_data.get('bucketName', ''),
                 webhook_data.get('eventType', ''),
                 webhook_data.get('objectName'),
-                webhook_data.get('objectSize'),
+                object_size,  # Use validated and converted object_size
                 webhook_data.get('objectVersionId'),
                 webhook_data.get('sourceIpAddress'),
                 webhook_data.get('userAgent'),
@@ -1025,3 +1087,145 @@ class Database:
             bucket_last_creation.sort(key=lambda x: x['sort_key'])
             
             return bucket_last_creation[:limit]
+
+    def get_top_largest_objects(self, limit=10, start_date_str=None, end_date_str=None, bucket_name=None):
+        """Get the top N largest objects from webhook events"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Build the WHERE clause
+            where_clause = "WHERE event_type LIKE 'b2:ObjectCreated:%' AND object_size > 0"
+            params = []
+            
+            if start_date_str and end_date_str:
+                where_clause += " AND created_at >= ? AND created_at <= ?"
+                params.extend([start_date_str, end_date_str])
+            
+            if bucket_name:
+                where_clause += " AND bucket_name = ?"
+                params.append(bucket_name)
+            
+            # Query to get top largest objects (using DISTINCT on request_id to avoid duplicates)
+            query = f"""
+                SELECT 
+                    request_id,
+                    object_key,
+                    object_size,
+                    bucket_name,
+                    event_type,
+                    created_at,
+                    event_timestamp
+                FROM (
+                    SELECT DISTINCT 
+                        request_id,
+                        FIRST_VALUE(object_key) OVER (PARTITION BY request_id ORDER BY created_at DESC) as object_key,
+                        FIRST_VALUE(object_size) OVER (PARTITION BY request_id ORDER BY created_at DESC) as object_size,
+                        FIRST_VALUE(bucket_name) OVER (PARTITION BY request_id ORDER BY created_at DESC) as bucket_name,
+                        FIRST_VALUE(event_type) OVER (PARTITION BY request_id ORDER BY created_at DESC) as event_type,
+                        FIRST_VALUE(created_at) OVER (PARTITION BY request_id ORDER BY created_at DESC) as created_at,
+                        FIRST_VALUE(event_timestamp) OVER (PARTITION BY request_id ORDER BY created_at DESC) as event_timestamp
+                    FROM webhook_events 
+                    {where_clause}
+                )
+                ORDER BY object_size DESC 
+                LIMIT ?
+            """
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def save_webhook_events_batch(self, webhook_events_list):
+        """Save multiple webhook events in a single transaction to reduce lock contention
+        
+        Args:
+            webhook_events_list (list): List of webhook event dictionaries
+            
+        Returns:
+            int: Number of events successfully saved
+        """
+        if not webhook_events_list:
+            return 0
+            
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            current_time = datetime.now().isoformat()
+            saved_count = 0
+            
+            try:
+                # Prepare batch data
+                batch_events = []
+                batch_stats = {}
+                
+                for webhook_data in webhook_events_list:
+                    # Convert B2's eventTimestamp (milliseconds since epoch) to ISO format
+                    event_timestamp_iso = current_time  # default fallback
+                    if 'eventTimestamp' in webhook_data:
+                        try:
+                            # B2 sends eventTimestamp as milliseconds since epoch
+                            timestamp_ms = int(webhook_data['eventTimestamp'])
+                            timestamp_dt = datetime.fromtimestamp(timestamp_ms / 1000.0)
+                            event_timestamp_iso = timestamp_dt.isoformat()
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Could not parse eventTimestamp {webhook_data.get('eventTimestamp')}: {e}")
+                            # Keep current_time as fallback
+                    
+                    # Prepare event data for batch insert
+                    event_tuple = (
+                        event_timestamp_iso,  # Use converted timestamp
+                        event_timestamp_iso,  # Use converted timestamp  
+                        webhook_data.get('bucketName', ''),
+                        webhook_data.get('eventType', ''),
+                        webhook_data.get('objectName'),
+                        webhook_data.get('objectSize'),
+                        webhook_data.get('objectVersionId'),
+                        webhook_data.get('sourceIpAddress'),
+                        webhook_data.get('userAgent'),
+                        webhook_data.get('eventId'),
+                        json.dumps(webhook_data),
+                        False,
+                        current_time
+                    )
+                    batch_events.append(event_tuple)
+                    
+                    # Aggregate statistics
+                    date_str = datetime.now().strftime('%Y-%m-%d')
+                    bucket_name = webhook_data.get('bucketName', '')
+                    event_type = webhook_data.get('eventType', '')
+                    stat_key = (date_str, bucket_name, event_type)
+                    batch_stats[stat_key] = batch_stats.get(stat_key, 0) + 1
+                
+                # Batch insert events
+                cursor.executemany('''
+                INSERT INTO webhook_events (
+                    timestamp, event_timestamp, bucket_name, event_type,
+                    object_key, object_size, object_version_id,
+                    source_ip, user_agent, request_id, raw_payload,
+                    processed, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', batch_events)
+                
+                saved_count = len(batch_events)
+                
+                # Batch update statistics
+                for (date_str, bucket_name, event_type), count in batch_stats.items():
+                    cursor.execute('''
+                    INSERT OR REPLACE INTO webhook_statistics (date, bucket_name, event_type, event_count)
+                    VALUES (?, ?, ?, COALESCE((
+                        SELECT event_count FROM webhook_statistics 
+                        WHERE date = ? AND bucket_name = ? AND event_type = ?
+                    ), 0) + ?)
+                    ''', (
+                        date_str, bucket_name, event_type,
+                        date_str, bucket_name, event_type,
+                        count
+                    ))
+                
+                conn.commit()
+                logger.info(f"Batch saved {saved_count} webhook events successfully")
+                return saved_count
+                
+            except Exception as e:
+                logger.error(f"Error in batch save webhook events: {e}")
+                conn.rollback()
+                return 0

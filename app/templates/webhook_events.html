@@ -5,296 +5,171 @@
 <div class="container-fluid mt-4">
     <div class="row">
         <div class="col-12">
-            <div class="d-flex justify-content-between align-items-center mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2>
-                    <i class="fas fa-broadcast-tower me-2"></i>
-                    Webhook Events Monitor
+                    <i class="fas fa-chart-line me-2"></i>
+                    Webhook Activity Monitor
                 </h2>
-                <div class="d-flex gap-2">
+                <div class="d-flex gap-2 align-items-center">
                     <span class="badge bg-success" id="connectionStatus">
                         <i class="fas fa-circle me-1"></i>Connected
                     </span>
-                    <button id="pauseUpdates" class="btn btn-outline-secondary btn-sm">
-                        <i class="fas fa-pause me-1"></i>Pause
+                    <span class="badge bg-info" id="updateStatus">
+                        <i class="fas fa-clock me-1"></i>30s Average
+                    </span>
+                    <button id="resetStats" class="btn btn-outline-secondary btn-sm">
+                        <i class="fas fa-redo me-1"></i>Reset
                     </button>
-                    <button id="clearEvents" class="btn btn-outline-danger btn-sm">
-                        <i class="fas fa-trash me-1"></i>Clear
-                    </button>
-                    <div class="dropdown">
-                        <button class="btn btn-outline-primary btn-sm dropdown-toggle" type="button" id="manageDropdown" data-bs-toggle="dropdown">
-                            <i class="fas fa-cog me-1"></i>Manage
-                        </button>
-                        <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="#" id="selectAll">Select All Events</a></li>
-                            <li><a class="dropdown-item" href="#" id="selectNone">Clear Selection</a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item text-warning" href="#" id="deleteOldEvents">Delete Old Events...</a></li>
-                            <li><a class="dropdown-item text-danger" href="#" id="deleteAllEvents">Delete All Events...</a></li>
-                        </ul>
-                    </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Filters -->
-    <div class="row mb-4">
-        <div class="col-md-4">
-            <label class="form-label">Filter by Bucket</label>
-            <select id="bucketFilter" class="form-select">
-                <option value="">All Buckets</option>
-            </select>
-        </div>
-        <div class="col-md-3">
-            <label class="form-label">Event Type</label>
-            <select id="eventTypeFilter" class="form-select">
-                <option value="">All Event Types</option>
-                <option value="b2:ObjectCreated:Upload">Object Created (Upload)</option>
-                <option value="b2:ObjectCreated:MultipartUpload">Object Created (Multipart)</option>
-                <option value="b2:ObjectCreated:Copy">Object Created (Copy)</option>
-                <option value="b2:ObjectDeleted:Delete">Object Deleted</option>
-                <option value="b2:HideMarkerCreated:Hide">Hide Marker Created</option>
-            </select>
-        </div>
-        <div class="col-md-3">
-            <label class="form-label">Time Range</label>
-            <select id="timeRangeFilter" class="form-select">
-                <option value="all">All Time</option>
-                <option value="1h">Last Hour</option>
-                <option value="24h">Last 24 Hours</option>
-                <option value="7d">Last 7 Days</option>
-            </select>
-        </div>
-        <div class="col-md-2 d-flex align-items-end">
-            <button id="refreshEvents" class="btn btn-primary w-100">
-                <i class="fas fa-sync-alt me-1"></i>Refresh
-            </button>
-        </div>
-    </div>
-
-    <!-- Statistics Cards -->
+    <!-- Real-time Statistics Cards -->
     <div class="row mb-4" id="statsCards">
         <div class="col-md-3">
-            <div class="card bg-primary text-white">
+            <div class="card bg-primary text-white h-100">
                 <div class="card-body">
-                    <div class="d-flex justify-content-between">
-                        <div>
-                            <h4 class="card-title" id="totalEvents">0</h4>
-                            <p class="card-text">Total Events</p>
-                        </div>
-                        <div class="align-self-center">
-                            <i class="fas fa-stream fa-2x"></i>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card bg-success text-white">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between">
-                        <div>
-                            <h4 class="card-title" id="createdEvents">0</h4>
-                            <p class="card-text">Objects Created</p>
-                        </div>
-                        <div class="align-self-center">
-                            <i class="fas fa-plus-circle fa-2x"></i>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card bg-danger text-white">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between">
-                        <div>
-                            <h4 class="card-title" id="deletedEvents">0</h4>
-                            <p class="card-text">Objects Deleted</p>
-                        </div>
-                        <div class="align-self-center">
-                            <i class="fas fa-trash fa-2x"></i>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card bg-info text-white">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between">
-                        <div>
-                            <h4 class="card-title" id="uniqueBuckets">0</h4>
-                            <p class="card-text">Active Buckets</p>
-                        </div>
-                        <div class="align-self-center">
-                            <i class="fas fa-archive fa-2x"></i>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Events List -->
-    <div class="row">
-        <div class="col-12">
-            <!-- Bulk Actions Bar (hidden by default) -->
-            <div id="bulkActionsBar" class="card mb-3" style="display: none;">
-                <div class="card-body py-2">
                     <div class="d-flex justify-content-between align-items-center">
                         <div>
-                            <span id="selectedCount" class="fw-bold">0</span> events selected
+                            <h2 class="card-title mb-1" id="eventsPerSecond">0.0</h2>
+                            <p class="card-text mb-1">Events/second</p>
+                            <small id="eventsSubtext" class="opacity-75">30s average</small>
                         </div>
-                        <div class="d-flex gap-2">
-                            <button id="bulkDelete" class="btn btn-danger btn-sm">
-                                <i class="fas fa-trash me-1"></i>Delete Selected
-                            </button>
-                            <button id="bulkSelectNone" class="btn btn-outline-secondary btn-sm">
-                                <i class="fas fa-times me-1"></i>Clear Selection
-                            </button>
+                        <div class="align-self-center">
+                            <i class="fas fa-stream fa-3x opacity-75"></i>
                         </div>
+                    </div>
+                    <div class="mt-2">
+                        <small class="opacity-75">Total: <span id="totalEventsCount">0</span></small>
                     </div>
                 </div>
             </div>
-            
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-success text-white h-100">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h2 class="card-title mb-1" id="objectsAddedPerSecond">0.0</h2>
+                            <p class="card-text mb-1">Objects Added/sec</p>
+                            <small id="addedSubtext" class="opacity-75">30s average</small>
+                        </div>
+                        <div class="align-self-center">
+                            <i class="fas fa-plus-circle fa-3x opacity-75"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <small class="opacity-75">Size: <span id="addedDataRate">0 B/s</span></small>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-danger text-white h-100">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h2 class="card-title mb-1" id="objectsRemovedPerSecond">0.0</h2>
+                            <p class="card-text mb-1">Objects Removed/sec</p>
+                            <small id="removedSubtext" class="opacity-75">30s average</small>
+                        </div>
+                        <div class="align-self-center">
+                            <i class="fas fa-trash fa-3x opacity-75"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <small class="opacity-75">Size: <span id="removedDataRate">0 B/s</span></small>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-info text-white h-100">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h2 class="card-title mb-1" id="activeBuckets">0</h2>
+                            <p class="card-text mb-1">Active Buckets</p>
+                            <small id="bucketsSubtext" class="opacity-75">30s window</small>
+                        </div>
+                        <div class="align-self-center">
+                            <i class="fas fa-archive fa-3x opacity-75"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <small class="opacity-75">Peak: <span id="peakBuckets">0</span></small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Activity Timeline Chart -->
+    <div class="row mb-4">
+        <div class="col-12">
             <div class="card">
-                <div class="card-header d-flex justify-content-between align-items-center">
+                <div class="card-header">
                     <h5 class="mb-0">
-                        <i class="fas fa-list me-2"></i>
-                        Live Events Feed
+                        <i class="fas fa-chart-area me-2"></i>
+                        Activity Timeline (Last 5 Minutes)
                     </h5>
-                    <div class="d-flex align-items-center gap-3">
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" id="selectAllVisible">
-                            <label class="form-check-label" for="selectAllVisible">
-                                Select visible events
-                            </label>
+                </div>
+                <div class="card-body">
+                    <canvas id="activityChart" height="100"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Current Activity Summary -->
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h6 class="mb-0">
+                        <i class="fas fa-list me-2"></i>
+                        Active Buckets (Last 30s)
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div id="activeBucketsList" class="text-muted">
+                        <em>No recent activity</em>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h6 class="mb-0">
+                        <i class="fas fa-info-circle me-2"></i>
+                        System Status
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="row text-center">
+                        <div class="col-4">
+                            <div class="text-success" id="mongoStatus">
+                                <i class="fas fa-database fa-2x"></i>
+                                <br><small>MongoDB Direct</small>
+                            </div>
                         </div>
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="autoScroll" checked>
-                            <label class="form-check-label" for="autoScroll">
-                                Auto-scroll to new events
-                            </label>
+                        <div class="col-4">
+                            <div class="text-primary" id="websocketStatus">
+                                <i class="fas fa-wifi fa-2x"></i>
+                                <br><small>WebSocket</small>
+                            </div>
+                        </div>
+                        <div class="col-4">
+                            <div class="text-info" id="lastUpdateStatus">
+                                <i class="fas fa-clock fa-2x"></i>
+                                <br><small>Last Update</small>
+                                <br><span id="lastUpdateTime">--</span>
+                            </div>
                         </div>
                     </div>
                 </div>
-                <div class="card-body p-0">
-                    <div id="eventsContainer" style="max-height: 600px; overflow-y: auto;">
-                        <div id="noEventsMessage" class="text-center p-5 text-muted">
-                            <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
-                            <h5>No events yet</h5>
-                            <p>Webhook events will appear here in real-time</p>
-                        </div>
-                        <div id="eventsList"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Event Detail Modal -->
-<div class="modal fade" id="eventDetailModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Event Details</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div id="eventDetailContent"></div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                <button type="button" id="copyEventData" class="btn btn-primary">
-                    <i class="fas fa-copy me-1"></i>Copy JSON
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Delete Old Events Modal -->
-<div class="modal fade" id="deleteOldEventsModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Delete Old Events</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <p>Delete webhook events older than:</p>
-                <div class="mb-3">
-                    <label for="deleteOldDays" class="form-label">Days</label>
-                    <select id="deleteOldDays" class="form-select">
-                        <option value="7">7 days</option>
-                        <option value="30" selected>30 days</option>
-                        <option value="60">60 days</option>
-                        <option value="90">90 days</option>
-                        <option value="365">1 year</option>
-                    </select>
-                </div>
-                <p class="text-muted small">This action cannot be undone.</p>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" id="confirmDeleteOld" class="btn btn-warning">
-                    <i class="fas fa-trash me-1"></i>Delete Old Events
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Delete All Events Modal -->
-<div class="modal fade" id="deleteAllEventsModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title text-danger">Delete All Events</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="alert alert-danger">
-                    <i class="fas fa-exclamation-triangle me-2"></i>
-                    <strong>Warning:</strong> This will permanently delete ALL webhook events.
-                </div>
-                <p>This action cannot be undone. Are you sure you want to continue?</p>
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="confirmDeleteAllCheck">
-                    <label class="form-check-label" for="confirmDeleteAllCheck">
-                        I understand this action cannot be undone
-                    </label>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" id="confirmDeleteAll" class="btn btn-danger" disabled>
-                    <i class="fas fa-trash me-1"></i>Delete All Events
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Bulk Delete Confirmation Modal -->
-<div class="modal fade" id="bulkDeleteModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Delete Selected Events</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <p>Are you sure you want to delete <span id="bulkDeleteCount" class="fw-bold">0</span> selected events?</p>
-                <p class="text-muted small">This action cannot be undone.</p>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" id="confirmBulkDelete" class="btn btn-danger">
-                    <i class="fas fa-trash me-1"></i>Delete Selected
-                </button>
             </div>
         </div>
     </div>
@@ -302,27 +177,36 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-const CSRF_TOKEN = "{{ csrf_token() }}";
-
-class WebhookEventsMonitor {
+class WebhookActivityMonitor {
     constructor() {
-        this.events = [];
-        this.filteredEvents = [];
-        this.selectedEvents = new Set();
         this.isConnected = false;
-        this.isPaused = false;
         this.socket = null;
-        this.selectedEvent = null;
+        this.chart = null;
+        this.eventHistory = []; // Store 30s rolling window of summaries
+        this.bucketActivity = new Map(); // Track bucket activity timestamps
+        this.totals = {
+            events: 0,
+            objectsAdded: 0,
+            objectsRemoved: 0,
+            dataAdded: 0,
+            dataRemoved: 0
+        };
+        this.peaks = {
+            buckets: 0
+        };
         
         this.init();
     }
     
     init() {
         this.connectWebSocket();
+        this.setupChart();
         this.bindEvents();
-        this.loadInitialData();
-        this.startPeriodicRefresh();
+        this.startCleanupInterval();
+        this.checkSystemStatus();
+        this.startSystemStatusInterval();
     }
     
     connectWebSocket() {
@@ -332,7 +216,7 @@ class WebhookEventsMonitor {
             this.socket.on('connect', () => {
                 this.isConnected = true;
                 this.updateConnectionStatus();
-                console.log('WebSocket connected');
+                console.log('WebSocket connected to webhook activity monitor');
             });
             
             this.socket.on('disconnect', () => {
@@ -341,491 +225,426 @@ class WebhookEventsMonitor {
                 console.log('WebSocket disconnected');
             });
             
+            // Handle webhook event summaries
+            this.socket.on('webhook_summary', (summaryData) => {
+                console.log('Received webhook summary:', summaryData);
+                this.processSummary(summaryData);
+            });
+            
+            // Handle individual webhook events for immediate updates
             this.socket.on('webhook_event', (eventData) => {
-                if (!this.isPaused) {
-                    this.addNewEvent(eventData);
-                }
+                console.log('Received individual webhook event:', eventData);
+                this.processIndividualEvent(eventData);
             });
         }
     }
     
     updateConnectionStatus() {
         const status = document.getElementById('connectionStatus');
+        const wsStatus = document.getElementById('websocketStatus');
+        
         if (this.isConnected) {
             status.className = 'badge bg-success';
             status.innerHTML = '<i class="fas fa-circle me-1"></i>Connected';
+            
+            wsStatus.className = 'text-success';
+            wsStatus.innerHTML = '<i class="fas fa-wifi fa-2x"></i><br><small>WebSocket</small>';
         } else {
             status.className = 'badge bg-danger';
             status.innerHTML = '<i class="fas fa-circle me-1"></i>Disconnected';
+            
+            wsStatus.className = 'text-danger';
+            wsStatus.innerHTML = '<i class="fas fa-wifi-slash fa-2x"></i><br><small>WebSocket</small>';
         }
+    }
+    
+    setupChart() {
+        const ctx = document.getElementById('activityChart').getContext('2d');
+        this.chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Events/sec',
+                        data: [],
+                        borderColor: '#007bff',
+                        backgroundColor: 'rgba(0, 123, 255, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    },
+                    {
+                        label: 'Objects Added/sec',
+                        data: [],
+                        borderColor: '#28a745',
+                        backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                        fill: false,
+                        tension: 0.4
+                    },
+                    {
+                        label: 'Objects Removed/sec',
+                        data: [],
+                        borderColor: '#dc3545',
+                        backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                        fill: false,
+                        tension: 0.4
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'minute',
+                            displayFormats: {
+                                minute: 'HH:mm'
+                            }
+                        },
+                        title: {
+                            display: true,
+                            text: 'Time'
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Rate (per second)'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top'
+                    }
+                },
+                interaction: {
+                    intersect: false,
+                    mode: 'index'
+                }
+            }
+        });
     }
     
     bindEvents() {
-        // Filter changes
-        document.getElementById('bucketFilter').addEventListener('change', () => this.applyFilters());
-        document.getElementById('eventTypeFilter').addEventListener('change', () => this.applyFilters());
-        document.getElementById('timeRangeFilter').addEventListener('change', () => this.applyFilters());
-        
-        // Control buttons
-        document.getElementById('pauseUpdates').addEventListener('click', () => this.togglePause());
-        document.getElementById('clearEvents').addEventListener('click', () => this.clearEvents());
-        document.getElementById('refreshEvents').addEventListener('click', () => this.refreshEvents());
-        
-        // Copy event data
-        document.getElementById('copyEventData').addEventListener('click', () => this.copyEventData());
-        
-        // Management dropdown
-        document.getElementById('selectAll').addEventListener('click', (e) => {
-            e.preventDefault();
-            this.selectAllEvents();
-        });
-        document.getElementById('selectNone').addEventListener('click', (e) => {
-            e.preventDefault();
-            this.clearSelection();
-        });
-        document.getElementById('deleteOldEvents').addEventListener('click', (e) => {
-            e.preventDefault();
-            this.showDeleteOldEventsModal();
-        });
-        document.getElementById('deleteAllEvents').addEventListener('click', (e) => {
-            e.preventDefault();
-            this.showDeleteAllEventsModal();
-        });
-        
-        // Select all visible checkbox
-        document.getElementById('selectAllVisible').addEventListener('change', (e) => {
-            if (e.target.checked) {
-                this.selectVisibleEvents();
-            } else {
-                this.clearSelection();
-            }
-        });
-        
-        // Bulk actions
-        document.getElementById('bulkDelete').addEventListener('click', () => this.showBulkDeleteModal());
-        document.getElementById('bulkSelectNone').addEventListener('click', () => this.clearSelection());
-        
-        // Modal confirmations
-        document.getElementById('confirmDeleteOld').addEventListener('click', () => this.deleteOldEvents());
-        document.getElementById('confirmDeleteAll').addEventListener('click', () => this.deleteAllEvents());
-        document.getElementById('confirmBulkDelete').addEventListener('click', () => this.bulkDeleteEvents());
-        
-        // Delete all confirmation checkbox
-        document.getElementById('confirmDeleteAllCheck').addEventListener('change', (e) => {
-            document.getElementById('confirmDeleteAll').disabled = !e.target.checked;
+        document.getElementById('resetStats').addEventListener('click', () => {
+            this.resetStats();
         });
     }
     
-    async loadInitialData() {
-        try {
-            // Load recent events
-            const response = await fetch('/api/webhook_events/list?limit=100');
-            const data = await response.json();
-            
-            if (data.events) {
-                this.events = data.events.map(event => ({
-                    ...event,
-                    timestamp: new Date(event.timestamp),
-                    isNew: false
-                }));
-                this.applyFilters();
-            }
-            
-            // Load bucket list for filter
-            const bucketsResponse = await fetch('/api/b2_buckets');
-            const bucketsData = await bucketsResponse.json();
-            
-            if (bucketsData.b2_buckets) {
-                this.populateBucketFilter(bucketsData.b2_buckets);
-            }
-            
-        } catch (error) {
-            console.error('Error loading initial data:', error);
+    processSummary(summary) {
+        const now = new Date();
+        const summaryTime = new Date(summary.timestamp);
+        
+        // Log window type for debugging
+        if (summary.window_type === 'non_overlapping') {
+            console.log(`Received non-overlapping summary: ${summary.total_events} events over ${summary.period_seconds}s`);
         }
-    }
-    
-    populateBucketFilter(buckets) {
-        const select = document.getElementById('bucketFilter');
-        buckets.forEach(bucket => {
-            const option = document.createElement('option');
-            option.value = bucket.bucket_name;
-            option.textContent = bucket.bucket_name;
-            select.appendChild(option);
+        
+        // Add to event history for 30s rolling calculation
+        this.eventHistory.push({
+            timestamp: summaryTime,
+            total_events: summary.total_events,
+            objects_added: summary.objects_added,
+            objects_removed: summary.objects_removed,
+            data_added: summary.data_added,
+            data_removed: summary.data_removed,
+            unique_buckets: summary.unique_buckets,
+            bucket_list: summary.bucket_list || [],
+            period_seconds: summary.period_seconds || 1,  // Actual time period this summary covers
+            window_type: summary.window_type || 'unknown'
         });
-    }
-    
-    addNewEvent(eventData) {
-        console.log("Socket received webhook_event with data:", JSON.stringify(eventData));
-        const event = {
-            id: eventData.id,
-            request_id: eventData.request_id,
-            event_type: eventData.event_type,
-            bucket_name: eventData.bucket_name,
-            object_key: eventData.object_key,
-            object_size: eventData.object_size,
-            timestamp: new Date(eventData.created_at),
-            b2_event_timestamp: eventData.event_timestamp,
-            object_version_id: eventData.object_version_id,
-            isNew: true
-        };
-        console.log("Processed event object for UI:", JSON.stringify(event));
         
-        this.events.unshift(event);
+        // Clean old history (keep only last 30 seconds)
+        const cutoff = new Date(now.getTime() - 30000);
+        this.eventHistory = this.eventHistory.filter(entry => entry.timestamp >= cutoff);
         
-        // Keep only last 1000 events to prevent memory issues
-        if (this.events.length > 1000) {
-            this.events = this.events.slice(0, 1000);
-        }
+        // Update bucket activity tracking
+        summary.bucket_list?.forEach(bucket => {
+            this.bucketActivity.set(bucket, now);
+        });
         
-        this.applyFilters();
-        
-        // Auto-scroll if enabled
-        if (document.getElementById('autoScroll').checked) {
-            setTimeout(() => {
-                const container = document.getElementById('eventsContainer');
-                container.scrollTop = 0;
-            }, 100);
-        }
-    }
-    
-    applyFilters() {
-        const bucketFilter = document.getElementById('bucketFilter').value;
-        const eventTypeFilter = document.getElementById('eventTypeFilter').value;
-        const timeRangeFilter = document.getElementById('timeRangeFilter').value;
-        
-        let filtered = [...this.events];
-        
-        // Bucket filter
-        if (bucketFilter) {
-            filtered = filtered.filter(event => event.bucket_name === bucketFilter);
-        }
-        
-        // Event type filter
-        if (eventTypeFilter) {
-            filtered = filtered.filter(event => event.event_type === eventTypeFilter);
-        }
-        
-        // Time range filter
-        if (timeRangeFilter !== 'all') {
-            const now = new Date();
-            let cutoff;
-            
-            switch (timeRangeFilter) {
-                case '1h':
-                    cutoff = new Date(now.getTime() - 60 * 60 * 1000);
-                    break;
-                case '24h':
-                    cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-                    break;
-                case '7d':
-                    cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-                    break;
-            }
-            
-            if (cutoff) {
-                filtered = filtered.filter(event => event.timestamp >= cutoff);
+        // Clean old bucket activity
+        for (const [bucket, lastSeen] of this.bucketActivity.entries()) {
+            if (now - lastSeen > 30000) {
+                this.bucketActivity.delete(bucket);
             }
         }
         
-        this.filteredEvents = filtered;
-        this.renderEvents();
-        this.updateStatistics();
+        // Update totals (these are cumulative across all summaries)
+        this.totals.events += summary.total_events;
+        this.totals.objectsAdded += summary.objects_added;
+        this.totals.objectsRemoved += summary.objects_removed;
+        this.totals.dataAdded += summary.data_added;
+        this.totals.dataRemoved += summary.data_removed;
+        
+        // Update peak buckets
+        if (summary.unique_buckets > this.peaks.buckets) {
+            this.peaks.buckets = summary.unique_buckets;
+        }
+        
+        // Update UI
+        this.updateStatisticsDisplay();
+        this.updateChart(summaryTime, summary);
+        this.updateActiveBucketsList();
+        this.updateLastUpdateTime();
+        
+        // Flash effect for activity
+        this.flashActivity();
     }
     
-    renderEvents() {
-        const container = document.getElementById('eventsList');
-        const noEventsMessage = document.getElementById('noEventsMessage');
+    processIndividualEvent(event) {
+        // Process individual webhook event for immediate visual feedback
+        const now = new Date();
         
-        if (this.filteredEvents.length === 0) {
-            container.innerHTML = '';
-            noEventsMessage.style.display = 'block';
+        // Update bucket activity tracking for immediate UI updates
+        const bucketName = event.bucket_name;
+        if (bucketName) {
+            this.bucketActivity.set(bucketName, now);
+            
+            // Clean old bucket activity
+            for (const [bucket, lastSeen] of this.bucketActivity.entries()) {
+                if (now - lastSeen > 30000) {
+                    this.bucketActivity.delete(bucket);
+                }
+            }
+            
+            // Immediately update active buckets display
+            this.updateActiveBucketsList();
+            
+            // Flash the active buckets card for immediate feedback
+            const activeBucketsCard = document.getElementById('activeBuckets').closest('.card');
+            if (activeBucketsCard) {
+                activeBucketsCard.style.transform = 'scale(1.05)';
+                activeBucketsCard.style.transition = 'transform 0.2s ease';
+                setTimeout(() => {
+                    activeBucketsCard.style.transform = 'scale(1)';
+                }, 200);
+            }
+        }
+        
+        // Update last update time
+        this.updateLastUpdateTime();
+        
+        // Increment totals for immediate feedback
+        this.totals.events += 1;
+        if (event.event_type && event.event_type.includes('Created')) {
+            this.totals.objectsAdded += 1;
+            this.totals.dataAdded += event.object_size || 0;
+        } else if (event.event_type && event.event_type.includes('Deleted')) {
+            this.totals.objectsRemoved += 1;
+            this.totals.dataRemoved += event.object_size || 0;
+        }
+        
+        // Update total events count immediately
+        document.getElementById('totalEventsCount').textContent = this.totals.events.toLocaleString();
+        
+        // Quick flash effect for activity indication
+        this.flashActivity();
+        
+        console.log('Processed individual event for bucket:', bucketName, 'type:', event.event_type);
+    }
+    
+    updateStatisticsDisplay() {
+        if (this.eventHistory.length === 0) {
+            // No data
+            document.getElementById('eventsPerSecond').textContent = '0.0';
+            document.getElementById('objectsAddedPerSecond').textContent = '0.0';
+            document.getElementById('objectsRemovedPerSecond').textContent = '0.0';
+            document.getElementById('addedDataRate').textContent = '0 B/s';
+            document.getElementById('removedDataRate').textContent = '0 B/s';
+            document.getElementById('activeBuckets').textContent = '0';
             return;
         }
         
-        noEventsMessage.style.display = 'none';
+        // Calculate rates based on actual time periods from non-overlapping windows
+        const totalEvents = this.eventHistory.reduce((sum, entry) => sum + entry.total_events, 0);
+        const totalObjectsAdded = this.eventHistory.reduce((sum, entry) => sum + entry.objects_added, 0);
+        const totalObjectsRemoved = this.eventHistory.reduce((sum, entry) => sum + entry.objects_removed, 0);
+        const totalDataAdded = this.eventHistory.reduce((sum, entry) => sum + entry.data_added, 0);
+        const totalDataRemoved = this.eventHistory.reduce((sum, entry) => sum + entry.data_removed, 0);
         
-        const html = this.filteredEvents.map(event => this.renderEventCard(event)).join('');
-        container.innerHTML = html;
+        // Calculate total time period covered by all summaries (for non-overlapping windows)
+        const nonOverlappingSummaries = this.eventHistory.filter(entry => entry.window_type === 'non_overlapping');
+        let totalTimePeriod = 30; // Default to 30 seconds if no period info
         
-        // Bind checkbox events
-        container.querySelectorAll('.event-checkbox').forEach(checkbox => {
-            checkbox.addEventListener('change', (e) => {
-                const eventId = parseInt(e.target.value);
-                if (e.target.checked) {
-                    this.selectedEvents.add(eventId);
-                } else {
-                    this.selectedEvents.delete(eventId);
-                }
-                this.updateSelectionUI();
-            });
-        });
-        
-        this.updateSelectionUI();
-    }
-    
-    updateSelectionUI() {
-        const selectedCount = this.selectedEvents.size;
-        const bulkActionsBar = document.getElementById('bulkActionsBar');
-        const selectedCountEl = document.getElementById('selectedCount');
-        const selectAllVisibleCheckbox = document.getElementById('selectAllVisible');
-        
-        // Show/hide bulk actions bar
-        if (selectedCount > 0) {
-            bulkActionsBar.style.display = 'block';
-            selectedCountEl.textContent = selectedCount;
+        if (nonOverlappingSummaries.length > 0) {
+            // For non-overlapping windows, sum up the actual time periods
+            totalTimePeriod = nonOverlappingSummaries.reduce((sum, entry) => sum + (entry.period_seconds || 1), 0);
+            console.log(`Calculated rates over ${totalTimePeriod}s from ${nonOverlappingSummaries.length} non-overlapping summaries`);
         } else {
-            bulkActionsBar.style.display = 'none';
+            // Fallback to 30-second window for older data
+            console.log('Using 30-second fallback window for rate calculation');
         }
         
-        // Update select all visible checkbox
-        const visibleEventIds = this.filteredEvents.map(e => e.id);
-        const allVisibleSelected = visibleEventIds.length > 0 && 
-                                   visibleEventIds.every(id => this.selectedEvents.has(id));
-        selectAllVisibleCheckbox.checked = allVisibleSelected;
-        selectAllVisibleCheckbox.indeterminate = 
-            !allVisibleSelected && visibleEventIds.some(id => this.selectedEvents.has(id));
-    }
-    
-    selectAllEvents() {
-        this.filteredEvents.forEach(event => {
-            this.selectedEvents.add(event.id);
-        });
-        this.renderEvents();
-    }
-    
-    selectVisibleEvents() {
-        this.filteredEvents.forEach(event => {
-            this.selectedEvents.add(event.id);
-        });
-        this.renderEvents();
-    }
-    
-    clearSelection() {
-        this.selectedEvents.clear();
-        this.renderEvents();
-    }
-    
-    showDeleteOldEventsModal() {
-        const modal = new bootstrap.Modal(document.getElementById('deleteOldEventsModal'));
-        modal.show();
-    }
-    
-    showDeleteAllEventsModal() {
-        // Reset confirmation checkbox
-        document.getElementById('confirmDeleteAllCheck').checked = false;
-        document.getElementById('confirmDeleteAll').disabled = true;
+        const eventsPerSecond = totalEvents / totalTimePeriod;
+        const objectsAddedPerSecond = totalObjectsAdded / totalTimePeriod;
+        const objectsRemovedPerSecond = totalObjectsRemoved / totalTimePeriod;
+        const dataAddedPerSecond = totalDataAdded / totalTimePeriod;
+        const dataRemovedPerSecond = totalDataRemoved / totalTimePeriod;
         
-        const modal = new bootstrap.Modal(document.getElementById('deleteAllEventsModal'));
-        modal.show();
+        // Update display
+        document.getElementById('eventsPerSecond').textContent = eventsPerSecond.toFixed(1);
+        document.getElementById('objectsAddedPerSecond').textContent = objectsAddedPerSecond.toFixed(1);
+        document.getElementById('objectsRemovedPerSecond').textContent = objectsRemovedPerSecond.toFixed(1);
+        document.getElementById('addedDataRate').textContent = this.formatFileSize(dataAddedPerSecond) + '/s';
+        document.getElementById('removedDataRate').textContent = this.formatFileSize(dataRemovedPerSecond) + '/s';
+        document.getElementById('activeBuckets').textContent = this.bucketActivity.size.toString();
+        
+        // Update totals
+        document.getElementById('totalEventsCount').textContent = this.totals.events.toLocaleString();
+        document.getElementById('peakBuckets').textContent = this.peaks.buckets.toString();
+        
+        // Update subtexts with improved information
+        const latest = this.eventHistory[this.eventHistory.length - 1];
+        if (latest) {
+            const timeAgo = this.getTimeAgo(latest.timestamp);
+            const windowInfo = latest.window_type === 'non_overlapping' ? 'non-overlapping' : '30s rolling';
+            document.getElementById('eventsSubtext').textContent = `${windowInfo} (${timeAgo})`;
+            document.getElementById('addedSubtext').textContent = `${windowInfo} (${timeAgo})`;
+            document.getElementById('removedSubtext').textContent = `${windowInfo} (${timeAgo})`;
+            document.getElementById('bucketsSubtext').textContent = `30s window (${timeAgo})`;
+        }
     }
     
-    showBulkDeleteModal() {
-        document.getElementById('bulkDeleteCount').textContent = this.selectedEvents.size;
-        const modal = new bootstrap.Modal(document.getElementById('bulkDeleteModal'));
-        modal.show();
-    }
-    
-    async deleteOldEvents() {
-        const days = parseInt(document.getElementById('deleteOldDays').value);
+    updateChart(timestamp, summary) {
+        const timeLabel = timestamp.toLocaleTimeString();
+        
+        // Add safety check for chart initialization
+        if (!this.chart || !this.chart.data) {
+            console.warn('Chart not properly initialized, skipping update');
+            return;
+        }
+        
+        // Calculate per-second rates from the summary data
+        const periodSeconds = summary.period_seconds || 1;
+        const eventsPerSecond = summary.total_events / periodSeconds;
+        const objectsAddedPerSecond = summary.objects_added / periodSeconds;
+        const objectsRemovedPerSecond = summary.objects_removed / periodSeconds;
+        
+        // Add new data point
+        this.chart.data.labels.push(timeLabel);
+        this.chart.data.datasets[0].data.push(eventsPerSecond);
+        this.chart.data.datasets[1].data.push(objectsAddedPerSecond);
+        this.chart.data.datasets[2].data.push(objectsRemovedPerSecond);
+        
+        // Keep only last 5 minutes of data (300 seconds / 1 second interval = 300 points)
+        const maxPoints = 300;
+        if (this.chart.data.labels.length > maxPoints) {
+            this.chart.data.labels.shift();
+            this.chart.data.datasets.forEach(dataset => {
+                dataset.data.shift();
+            });
+        }
         
         try {
-            const response = await fetch('/api/webhook_events/delete/old', {
-                method: 'DELETE',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': CSRF_TOKEN
-                },
-                body: JSON.stringify({ days: days })
-            });
-            
-            const result = await response.json();
-            
-            if (result.success) {
-                this.showSuccessMessage(`Deleted ${result.deleted_count} events older than ${days} days`);
-                await this.refreshEvents();
-                bootstrap.Modal.getInstance(document.getElementById('deleteOldEventsModal')).hide();
-            } else {
-                this.showErrorMessage(`Error: ${result.error}`);
-            }
+            this.chart.update('none'); // No animation for smoother real-time updates
         } catch (error) {
-            this.showErrorMessage(`Error deleting old events: ${error.message}`);
+            console.error('Error updating chart:', error);
         }
     }
     
-    async deleteAllEvents() {
-        try {
-            const response = await fetch('/api/webhook_events/delete/all', {
-                method: 'DELETE',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': CSRF_TOKEN
-                },
-                body: JSON.stringify({ confirm: true })
-            });
-            
-            const result = await response.json();
-            
-            if (result.success) {
-                this.showSuccessMessage(`Deleted all ${result.deleted_count} events`);
-                this.events = [];
-                this.filteredEvents = [];
-                this.clearSelection();
-                this.renderEvents();
-                this.updateStatistics();
-                bootstrap.Modal.getInstance(document.getElementById('deleteAllEventsModal')).hide();
-            } else {
-                this.showErrorMessage(`Error: ${result.error}`);
-            }
-        } catch (error) {
-            this.showErrorMessage(`Error deleting all events: ${error.message}`);
+    updateActiveBucketsList() {
+        const container = document.getElementById('activeBucketsList');
+        
+        if (this.bucketActivity.size === 0) {
+            container.innerHTML = '<em class="text-muted">No recent activity</em>';
+            return;
         }
-    }
-    
-    async bulkDeleteEvents() {
-        const eventIds = Array.from(this.selectedEvents);
         
-        try {
-            const response = await fetch('/api/webhook_events/delete', {
-                method: 'DELETE',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': CSRF_TOKEN
-                },
-                body: JSON.stringify({ event_ids: eventIds })
-            });
-            
-            const result = await response.json();
-            
-            if (result.success) {
-                this.showSuccessMessage(`Deleted ${result.deleted_count} selected events`);
-                
-                // Remove deleted events from local arrays
-                this.events = this.events.filter(event => !this.selectedEvents.has(event.id));
-                this.filteredEvents = this.filteredEvents.filter(event => !this.selectedEvents.has(event.id));
-                
-                this.clearSelection();
-                this.renderEvents();
-                this.updateStatistics();
-                bootstrap.Modal.getInstance(document.getElementById('bulkDeleteModal')).hide();
-            } else {
-                this.showErrorMessage(`Error: ${result.error}`);
-            }
-        } catch (error) {
-            this.showErrorMessage(`Error deleting selected events: ${error.message}`);
-        }
-    }
-    
-    showSuccessMessage(message) {
-        // Create and show a success toast or alert
-        const alertDiv = document.createElement('div');
-        alertDiv.className = 'alert alert-success alert-dismissible fade show position-fixed';
-        alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
-        alertDiv.innerHTML = `
-            <i class="fas fa-check-circle me-2"></i>${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        `;
-        document.body.appendChild(alertDiv);
-        
-        // Auto remove after 5 seconds
-        setTimeout(() => {
-            if (alertDiv.parentNode) {
-                alertDiv.remove();
-            }
-        }, 5000);
-    }
-    
-    showErrorMessage(message) {
-        // Create and show an error toast or alert
-        const alertDiv = document.createElement('div');
-        alertDiv.className = 'alert alert-danger alert-dismissible fade show position-fixed';
-        alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
-        alertDiv.innerHTML = `
-            <i class="fas fa-exclamation-circle me-2"></i>${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        `;
-        document.body.appendChild(alertDiv);
-        
-        // Auto remove after 8 seconds for errors
-        setTimeout(() => {
-            if (alertDiv.parentNode) {
-                alertDiv.remove();
-            }
-        }, 8000);
-    }
-    
-    renderEventCard(event) {
-        const timeAgo = this.getTimeAgo(event.timestamp);
-        const eventTypeIcon = this.getEventTypeIcon(event.event_type);
-        const eventTypeBadge = this.getEventTypeBadge(event.event_type);
-        const isSelected = this.selectedEvents.has(event.id);
-        
-        return `
-            <div class="event-card border-bottom p-3 ${event.isNew ? 'bg-light' : ''} ${isSelected ? 'border-primary' : ''}" 
-                 data-event-id="${event.id}">
-                <div class="d-flex justify-content-between align-items-start">
-                    <div class="d-flex align-items-start">
-                        <div class="me-3">
-                            <div class="form-check">
-                                <input class="form-check-input event-checkbox" type="checkbox" 
-                                       value="${event.id}" ${isSelected ? 'checked' : ''}>
-                            </div>
-                        </div>
-                        <div class="me-3">
-                            <i class="${eventTypeIcon} fa-lg text-primary"></i>
-                        </div>
-                        <div class="flex-grow-1" style="cursor: pointer;" onclick="window.webhookMonitor.showEventDetails(${JSON.stringify(event).replace(/"/g, '&quot;')})">
-                            <div class="d-flex align-items-center mb-1">
-                                <h6 class="mb-0 me-2">${event.object_key || 'Unknown Object'}</h6>
-                                ${eventTypeBadge}
-                                ${event.isNew ? '<span class="badge bg-warning ms-2">NEW</span>' : ''}
-                            </div>
-                            <div class="text-muted small mb-2">
-                                <strong>Bucket:</strong> ${event.bucket_name || 'Unknown'} | 
-                                <strong>Size:</strong> ${this.formatFileSize(event.object_size || 0)} |
-                                <strong>Time:</strong> ${timeAgo}
-                            </div>
-                            <div class="text-muted small">
-                                <strong>Event ID:</strong> ${event.request_id || event.id}
-                            </div>
-                        </div>
-                    </div>
-                    <div class="text-end text-muted small">
-                        <div>${event.timestamp.toLocaleString()}</div>
-                        <div class="mt-1">
-                            <i class="fas fa-eye text-primary" title="Click for details"></i>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-    
-    getEventTypeIcon(eventType) {
-        if (eventType && eventType.includes('Created')) return 'fas fa-plus-circle';
-        if (eventType && eventType.includes('Deleted')) return 'fas fa-trash';
-        if (eventType && eventType.includes('Hide')) return 'fas fa-eye-slash';
-        return 'fas fa-file';
-    }
-    
-    getEventTypeBadge(eventType) {
-        if (eventType && eventType.includes('Created')) return '<span class="badge bg-success">Created</span>';
-        if (eventType && eventType.includes('Deleted')) return '<span class="badge bg-danger">Deleted</span>';
-        if (eventType && eventType.includes('Hide')) return '<span class="badge bg-warning">Hidden</span>';
-        return '<span class="badge bg-secondary">Other</span>';
-    }
-    
-    getTimeAgo(timestamp) {
         const now = new Date();
-        const diff = now - timestamp;
-        const seconds = Math.floor(diff / 1000);
-        const minutes = Math.floor(seconds / 60);
-        const hours = Math.floor(minutes / 60);
-        const days = Math.floor(hours / 24);
+        const buckets = Array.from(this.bucketActivity.entries())
+            .sort(([,a], [,b]) => b - a) // Sort by most recent activity
+            .slice(0, 10); // Show only top 10
         
-        if (days > 0) return `${days}d ago`;
-        if (hours > 0) return `${hours}h ago`;
-        if (minutes > 0) return `${minutes}m ago`;
-        return `${seconds}s ago`;
+        const html = buckets.map(([bucket, lastSeen]) => {
+            const secondsAgo = Math.floor((now - lastSeen) / 1000);
+            const timeAgo = secondsAgo < 60 ? `${secondsAgo}s ago` : `${Math.floor(secondsAgo / 60)}m ago`;
+            
+            return `
+                <div class="d-flex justify-content-between align-items-center py-1">
+                    <span><i class="fas fa-archive me-2 text-info"></i>${bucket}</span>
+                    <small class="text-muted">${timeAgo}</small>
+                </div>
+            `;
+        }).join('');
+        
+        container.innerHTML = html;
+    }
+    
+    updateLastUpdateTime() {
+        const now = new Date();
+        document.getElementById('lastUpdateTime').textContent = now.toLocaleTimeString();
+    }
+    
+    flashActivity() {
+        // Flash the main statistics cards to indicate activity
+        const cards = ['eventsPerSecond', 'objectsAddedPerSecond', 'objectsRemovedPerSecond', 'activeBuckets'];
+        
+        cards.forEach(cardId => {
+            const card = document.getElementById(cardId).closest('.card');
+            if (card) {
+                card.style.transform = 'scale(1.02)';
+                card.style.transition = 'transform 0.15s ease';
+                setTimeout(() => {
+                    card.style.transform = 'scale(1)';
+                }, 150);
+            }
+        });
+    }
+    
+    resetStats() {
+        if (confirm('Reset all statistics and clear the activity history?')) {
+            this.eventHistory = [];
+            this.bucketActivity.clear();
+            this.totals = {
+                events: 0,
+                objectsAdded: 0,
+                objectsRemoved: 0,
+                dataAdded: 0,
+                dataRemoved: 0
+            };
+            this.peaks = {
+                buckets: 0
+            };
+            
+            // Clear chart
+            this.chart.data.labels = [];
+            this.chart.data.datasets.forEach(dataset => {
+                dataset.data = [];
+            });
+            this.chart.update();
+            
+            // Update displays
+            this.updateStatisticsDisplay();
+            this.updateActiveBucketsList();
+        }
+    }
+    
+    startCleanupInterval() {
+        // Clean up old data every 10 seconds
+        setInterval(() => {
+            const now = new Date();
+            const cutoff = new Date(now.getTime() - 30000);
+            
+            // Clean event history
+            this.eventHistory = this.eventHistory.filter(entry => entry.timestamp >= cutoff);
+            
+            // Clean bucket activity
+            for (const [bucket, lastSeen] of this.bucketActivity.entries()) {
+                if (now - lastSeen > 30000) {
+                    this.bucketActivity.delete(bucket);
+                }
+            }
+            
+            // Update displays
+            this.updateStatisticsDisplay();
+            this.updateActiveBucketsList();
+        }, 10000);
     }
     
     formatFileSize(bytes) {
@@ -836,107 +655,55 @@ class WebhookEventsMonitor {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     }
     
-    updateStatistics() {
-        const total = this.filteredEvents.length;
-        const created = this.filteredEvents.filter(e => e.event_type && e.event_type.includes('Created')).length;
-        const deleted = this.filteredEvents.filter(e => e.event_type && e.event_type.includes('Deleted')).length;
-        const uniqueBuckets = new Set(this.filteredEvents.map(e => e.bucket_name)).size;
+    getTimeAgo(timestamp) {
+        const now = new Date();
+        const diff = now - timestamp;
+        const seconds = Math.floor(diff / 1000);
+        const minutes = Math.floor(seconds / 60);
         
-        document.getElementById('totalEvents').textContent = total.toLocaleString();
-        document.getElementById('createdEvents').textContent = created.toLocaleString();
-        document.getElementById('deletedEvents').textContent = deleted.toLocaleString();
-        document.getElementById('uniqueBuckets').textContent = uniqueBuckets.toLocaleString();
+        if (minutes > 0) return `${minutes}m ago`;
+        return `${seconds}s ago`;
     }
     
-    showEventDetails(event) {
-        this.selectedEvent = event;
-        
-        const content = document.getElementById('eventDetailContent');
-        content.innerHTML = `
-            <div class="row">
-                <div class="col-md-6">
-                    <h6>Event Information</h6>
-                    <table class="table table-sm">
-                        <tr><td><strong>Event ID:</strong></td><td>${event.request_id || event.id}</td></tr>
-                        <tr><td><strong>Event Type:</strong></td><td>${event.event_type || 'Unknown'}</td></tr>
-                        <tr><td><strong>Timestamp:</strong></td><td>${event.timestamp.toLocaleString()}</td></tr>
-                        <tr><td><strong>Bucket:</strong></td><td>${event.bucket_name || 'Unknown'}</td></tr>
-                        <tr><td><strong>Object Name:</strong></td><td>${event.object_key || 'Unknown'}</td></tr>
-                        <tr><td><strong>Object Size:</strong></td><td>${this.formatFileSize(event.object_size || 0)}</td></tr>
-                    </table>
-                </div>
-                <div class="col-md-6">
-                    <h6>Raw Payload</h6>
-                    <pre class="bg-light p-3" style="max-height: 300px; overflow-y: auto; font-size: 0.8em;">
-${JSON.stringify(event, null, 2)}
-                    </pre>
-                </div>
-            </div>
-        `;
-        
-        const modal = new bootstrap.Modal(document.getElementById('eventDetailModal'));
-        modal.show();
+    checkSystemStatus() {
+        // Check application health endpoint
+        fetch('/api/health')
+            .then(response => response.json())
+            .then(data => {
+                this.updateMongoStatus(data.database, data.database_type);
+            })
+            .catch(error => {
+                console.error('Error checking system status:', error);
+                this.updateMongoStatus(false, 'Unknown');
+            });
     }
     
-    copyEventData() {
-        if (this.selectedEvent) {
-            navigator.clipboard.writeText(JSON.stringify(this.selectedEvent, null, 2))
-                .then(() => {
-                    // Show success feedback
-                    const btn = document.getElementById('copyEventData');
-                    const originalText = btn.innerHTML;
-                    btn.innerHTML = '<i class="fas fa-check me-1"></i>Copied!';
-                    btn.className = 'btn btn-success';
-                    
-                    setTimeout(() => {
-                        btn.innerHTML = originalText;
-                        btn.className = 'btn btn-primary';
-                    }, 2000);
-                })
-                .catch(err => console.error('Failed to copy:', err));
-        }
-    }
-    
-    togglePause() {
-        this.isPaused = !this.isPaused;
-        const btn = document.getElementById('pauseUpdates');
+    updateMongoStatus(isHealthy, databaseType) {
+        const mongoStatus = document.getElementById('mongoStatus');
         
-        if (this.isPaused) {
-            btn.innerHTML = '<i class="fas fa-play me-1"></i>Resume';
-            btn.className = 'btn btn-warning btn-sm';
+        if (isHealthy && databaseType === 'MongoDatabase') {
+            mongoStatus.className = 'text-success';
+            mongoStatus.innerHTML = '<i class="fas fa-database fa-2x"></i><br><small>MongoDB Ready</small>';
+        } else if (isHealthy && databaseType !== 'MongoDatabase') {
+            mongoStatus.className = 'text-warning';
+            mongoStatus.innerHTML = '<i class="fas fa-database fa-2x"></i><br><small>SQLite Mode</small>';
         } else {
-            btn.innerHTML = '<i class="fas fa-pause me-1"></i>Pause';
-            btn.className = 'btn btn-outline-secondary btn-sm';
+            mongoStatus.className = 'text-danger';
+            mongoStatus.innerHTML = '<i class="fas fa-database fa-2x"></i><br><small>DB Error</small>';
         }
     }
     
-    clearEvents() {
-        if (confirm('Clear all displayed events from view? This will only clear the local display, not the database.')) {
-            this.events = [];
-            this.filteredEvents = [];
-            this.clearSelection();
-            this.renderEvents();
-            this.updateStatistics();
-        }
-    }
-    
-    async refreshEvents() {
-        await this.loadInitialData();
-    }
-    
-    startPeriodicRefresh() {
-        // Refresh statistics every 30 seconds
+    startSystemStatusInterval() {
+        // Check system status every 30 seconds
         setInterval(() => {
-            if (!this.isPaused) {
-                this.updateStatistics();
-            }
+            this.checkSystemStatus();
         }, 30000);
     }
 }
 
 // Initialize when page loads
 document.addEventListener('DOMContentLoaded', () => {
-    window.webhookMonitor = new WebhookEventsMonitor();
+    window.webhookActivityMonitor = new WebhookActivityMonitor();
 });
 </script>
 {% endblock %} 

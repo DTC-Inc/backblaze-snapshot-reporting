@@ -7,7 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Create a non-root user
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash appuser
 
 # Set working directory
 WORKDIR /app
@@ -35,7 +36,10 @@ ENV PATH=/home/appuser/.local/bin:${PATH}
 # Create entry point script
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh && \
-    chown -R appuser:appuser /app /data /docker-entrypoint.sh
+    chown -R appuser:appuser /app /docker-entrypoint.sh
+
+# Note: We don't chown /data here since it will be mounted as a volume
+# and the entrypoint script will handle permissions
 
 # Set up volume for persistent data
 VOLUME ["/data"]
@@ -45,11 +49,12 @@ USER appuser
 
 # Set environment variables
 ENV DATABASE_URI=sqlite:////data/backblaze_snapshots.db \
-    SNAPSHOT_CACHE_DIR=/data/cache
+    SNAPSHOT_CACHE_DIR=/data/cache \
+    PYTHONPATH=/app
 
 # Expose port
 EXPOSE 5000
 
 # Run the application
 ENTRYPOINT ["/docker-entrypoint.sh"]
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "app.app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--pythonpath", "/app", "app.app:app"]

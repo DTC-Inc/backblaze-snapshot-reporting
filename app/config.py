@@ -65,10 +65,18 @@ HOST = os.getenv('HOST', '0.0.0.0')
 PORT = int(os.getenv('PORT', '5000'))
 APP_PUBLIC_URL = os.getenv('APP_PUBLIC_URL', '') # The public base URL of this application
 
+# Logging settings
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'WARNING').upper()  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+
 # Webhook settings
 WEBHOOK_ENABLED = os.getenv('WEBHOOK_ENABLED', 'True').lower() in ('true', '1', 't')
 WEBHOOK_SECRET_AUTO_GENERATE = os.getenv('WEBHOOK_SECRET_AUTO_GENERATE', 'True').lower() in ('true', '1', 't')
 WEBHOOK_DEFAULT_EVENTS = os.getenv('WEBHOOK_DEFAULT_EVENTS', 'b2:ObjectCreated:*,b2:ObjectDeleted:*').split(',')
+
+# Webhook Performance Settings
+WEBHOOK_BROADCAST_INTERVAL = float(os.getenv('WEBHOOK_BROADCAST_INTERVAL', '2.0'))  # Seconds between batched WebSocket updates
+WEBHOOK_BATCH_SIZE = int(os.getenv('WEBHOOK_BATCH_SIZE', '10'))  # Max events before forcing a broadcast
+WEBHOOK_MAX_EVENTS_MEMORY = int(os.getenv('WEBHOOK_MAX_EVENTS_MEMORY', '1000'))  # Max events to keep in frontend memory
 
 # Redis Settings for Event Buffering
 REDIS_URL = os.getenv('REDIS_URL', 'redis://redis:6379/0')  # Default to Docker service name

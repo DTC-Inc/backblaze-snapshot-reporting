@@ -6,17 +6,47 @@ echo "Entrypoint script running as: $(id)"
 echo "Initial permissions of /data:"
 ls -ld /data || echo "/data does not exist or cannot be listed initially"
 
-# Ensure /data is writable by appuser
-echo "Setting ownership of /data to appuser..."
-chown appuser:appuser /data
-echo "Permissions of /data after chown:"
+# Try to ensure /data is writable by appuser, but don't fail if we can't change ownership
+echo "Attempting to set ownership of /data to appuser..."
+if chown appuser:appuser /data 2>/dev/null; then
+    echo "✓ Successfully changed ownership of /data"
+else
+    echo "⚠ Cannot change ownership of /data (this is normal for rootless containers)"
+    echo "Checking if /data is writable..."
+    if [ -w /data ]; then
+        echo "✓ /data is writable"
+    else
+        echo "✗ /data is not writable - this may cause issues"
+        echo "Please ensure the host directory has correct permissions:"
+        echo "  sudo chown -R $(id -u):$(id -g) ./data"
+        echo "  or"
+        echo "  chmod 777 ./data"
+    fi
+fi
+
+echo "Final permissions of /data:"
 ls -ld /data
 
-# Initialize database
-echo "Initializing database..."
-python -m scripts.init_db /data/backblaze_snapshots.db
-echo "Contents and permissions of /data after db init:"
-ls -al /data
+# Create necessary subdirectories if they don't exist
+echo "Creating necessary subdirectories..."
+mkdir -p /data/backups || echo "Could not create /data/backups (may already exist or lack permissions)"
+mkdir -p /data/cache || echo "Could not create /data/cache (may already exist or lack permissions)"
+
+# Initialize database if it doesn't exist
+if [ ! -f /data/backblaze_snapshots.db ]; then
+    echo "Database not found, initializing..."
+    if python -m scripts.init_db /data/backblaze_snapshots.db 2>/dev/null; then
+        echo "✓ Database initialized successfully"
+    else
+        echo "⚠ Could not initialize database (may be permissions issue)"
+        echo "Will attempt to create database when application starts"
+    fi
+else
+    echo "✓ Database already exists"
+fi
+
+echo "Contents and permissions of /data:"
+ls -al /data || echo "Cannot list /data contents"
 
 # Check required packages
 echo "Checking required packages..."

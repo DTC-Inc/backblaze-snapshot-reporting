@@ -17,7 +17,12 @@ def get_database():
 @login_required
 def webhook_events_page():
     """Webhook events monitoring page"""
-    return render_template('webhook_events.html', page_title='Webhook Events Monitor')
+    # Import config here to avoid circular imports
+    from app.config import WEBHOOK_MAX_EVENTS_MEMORY
+    
+    return render_template('webhook_events.html', 
+                         page_title='Webhook Events Monitor',
+                         config={'WEBHOOK_MAX_EVENTS_MEMORY': WEBHOOK_MAX_EVENTS_MEMORY})
 
 @webhook_bp.route('/api/webhook_events/list')
 @login_required
@@ -223,68 +228,138 @@ def delete_webhook_events():
                 'error': 'No deletion criteria specified'
             }), 400
         
-        with db._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Build DELETE query with WHERE conditions
-            conditions = []
-            params = []
+        database_type = type(db).__name__
+        deleted_count = 0
+        
+        if database_type == 'MongoDatabase':
+            # MongoDB deletion
+            filter_query = {}
             
             if event_ids:
-                placeholders = ','.join(['?' for _ in event_ids])
-                conditions.append(f'id IN ({placeholders})')
-                params.extend(event_ids)
+                # Convert string IDs to ObjectIds if needed
+                from bson import ObjectId
+                object_ids = []
+                for event_id in event_ids:
+                    try:
+                        object_ids.append(ObjectId(event_id))
+                    except:
+                        object_ids.append(event_id)  # Keep as string if not valid ObjectId
+                filter_query['_id'] = {'$in': object_ids}
             
             if bucket_name:
-                conditions.append('bucket_name = ?')
-                params.append(bucket_name)
+                filter_query['bucket_name'] = bucket_name
             
             if event_type:
-                conditions.append('event_type = ?')
-                params.append(event_type)
+                filter_query['event_type'] = event_type
             
             if before_date:
-                conditions.append('timestamp < ?')
-                params.append(before_date)
+                filter_query['timestamp'] = {'$lt': before_date}
                 
             if after_date:
-                conditions.append('timestamp > ?')
-                params.append(after_date)
+                if 'timestamp' in filter_query:
+                    filter_query['timestamp']['$gt'] = after_date
+                else:
+                    filter_query['timestamp'] = {'$gt': after_date}
             
-            if delete_all and not conditions:
-                # Only allow delete all if explicitly requested and no other conditions
-                query = 'DELETE FROM webhook_events'
-                cursor.execute(query)
-            elif conditions:
-                where_clause = ' AND '.join(conditions)
-                query = f'DELETE FROM webhook_events WHERE {where_clause}'
-                cursor.execute(query, params)
-            else:
-                return jsonify({
-                    'success': False,
-                    'error': 'Invalid deletion criteria'
-                }), 400
+            if delete_all and not filter_query:
+                # Delete all events
+                result = db.db.webhook_events.delete_many({})
+                deleted_count = result.deleted_count
+                # Also clear statistics
+                db.db.webhook_statistics.delete_many({})
+            elif filter_query:
+                result = db.db.webhook_events.delete_many(filter_query)
+                deleted_count = result.deleted_count
             
-            deleted_count = cursor.rowcount
-            conn.commit()
-            
-            # Also clean up related statistics if needed
+            # Rebuild statistics if events were deleted
             if deleted_count > 0:
-                # Recalculate webhook statistics
-                cursor.execute('DELETE FROM webhook_statistics')
+                db.db.webhook_statistics.delete_many({})
+                # Rebuild statistics using MongoDB aggregation
+                pipeline = [
+                    {"$group": {
+                        "_id": {
+                            "date": {"$dateToString": {"format": "%Y-%m-%d", "date": {"$dateFromString": {"dateString": "$timestamp"}}}},
+                            "bucket_name": "$bucket_name",
+                            "event_type": "$event_type"
+                        },
+                        "event_count": {"$sum": 1}
+                    }},
+                    {"$project": {
+                        "_id": 0,
+                        "date": "$_id.date",
+                        "bucket_name": "$_id.bucket_name", 
+                        "event_type": "$_id.event_type",
+                        "event_count": 1
+                    }}
+                ]
+                stats = list(db.db.webhook_events.aggregate(pipeline))
+                if stats:
+                    db.db.webhook_statistics.insert_many(stats)
+        
+        else:
+            # SQLite deletion (original code)
+            with db._get_connection() as conn:
+                cursor = conn.cursor()
                 
-                # Rebuild statistics from remaining events
-                cursor.execute('''
-                    INSERT OR REPLACE INTO webhook_statistics (date, bucket_name, event_type, event_count)
-                    SELECT 
-                        DATE(timestamp) as date,
-                        bucket_name,
-                        event_type,
-                        COUNT(*) as event_count
-                    FROM webhook_events
-                    GROUP BY DATE(timestamp), bucket_name, event_type
-                ''')
+                # Build DELETE query with WHERE conditions
+                conditions = []
+                params = []
+                
+                if event_ids:
+                    placeholders = ','.join(['?' for _ in event_ids])
+                    conditions.append(f'id IN ({placeholders})')
+                    params.extend(event_ids)
+                
+                if bucket_name:
+                    conditions.append('bucket_name = ?')
+                    params.append(bucket_name)
+                
+                if event_type:
+                    conditions.append('event_type = ?')
+                    params.append(event_type)
+                
+                if before_date:
+                    conditions.append('timestamp < ?')
+                    params.append(before_date)
+                    
+                if after_date:
+                    conditions.append('timestamp > ?')
+                    params.append(after_date)
+                
+                if delete_all and not conditions:
+                    # Only allow delete all if explicitly requested and no other conditions
+                    query = 'DELETE FROM webhook_events'
+                    cursor.execute(query)
+                elif conditions:
+                    where_clause = ' AND '.join(conditions)
+                    query = f'DELETE FROM webhook_events WHERE {where_clause}'
+                    cursor.execute(query, params)
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Invalid deletion criteria'
+                    }), 400
+                
+                deleted_count = cursor.rowcount
                 conn.commit()
+                
+                # Also clean up related statistics if needed
+                if deleted_count > 0:
+                    # Recalculate webhook statistics
+                    cursor.execute('DELETE FROM webhook_statistics')
+                    
+                    # Rebuild statistics from remaining events
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO webhook_statistics (date, bucket_name, event_type, event_count)
+                        SELECT 
+                            DATE(timestamp) as date,
+                            bucket_name,
+                            event_type,
+                            COUNT(*) as event_count
+                        FROM webhook_events
+                        GROUP BY DATE(timestamp), bucket_name, event_type
+                    ''')
+                    conn.commit()
         
         return jsonify({
             'success': True,
@@ -308,17 +383,29 @@ def delete_bucket_events(bucket_name):
         if not db:
             return jsonify({'success': False, 'error': 'Database not available'}), 500
         
-        with db._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Delete events for the bucket
-            cursor.execute('DELETE FROM webhook_events WHERE bucket_name = ?', (bucket_name,))
-            deleted_count = cursor.rowcount
+        database_type = type(db).__name__
+        deleted_count = 0
+        
+        if database_type == 'MongoDatabase':
+            # MongoDB deletion
+            result = db.db.webhook_events.delete_many({'bucket_name': bucket_name})
+            deleted_count = result.deleted_count
             
             # Clean up statistics for this bucket
-            cursor.execute('DELETE FROM webhook_statistics WHERE bucket_name = ?', (bucket_name,))
-            
-            conn.commit()
+            db.db.webhook_statistics.delete_many({'bucket_name': bucket_name})
+        else:
+            # SQLite deletion
+            with db._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Delete events for the bucket
+                cursor.execute('DELETE FROM webhook_events WHERE bucket_name = ?', (bucket_name,))
+                deleted_count = cursor.rowcount
+                
+                # Clean up statistics for this bucket
+                cursor.execute('DELETE FROM webhook_statistics WHERE bucket_name = ?', (bucket_name,))
+                
+                conn.commit()
         
         return jsonify({
             'success': True,
@@ -354,18 +441,31 @@ def delete_old_events():
         
         cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         
-        with db._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Delete old events
-            cursor.execute('DELETE FROM webhook_events WHERE timestamp < ?', (cutoff_date,))
-            deleted_count = cursor.rowcount
+        database_type = type(db).__name__
+        deleted_count = 0
+        
+        if database_type == 'MongoDatabase':
+            # MongoDB deletion
+            result = db.db.webhook_events.delete_many({'timestamp': {'$lt': cutoff_date}})
+            deleted_count = result.deleted_count
             
             # Clean up old statistics
             cutoff_date_str = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-            cursor.execute('DELETE FROM webhook_statistics WHERE date < ?', (cutoff_date_str,))
-            
-            conn.commit()
+            db.db.webhook_statistics.delete_many({'date': {'$lt': cutoff_date_str}})
+        else:
+            # SQLite deletion
+            with db._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Delete old events
+                cursor.execute('DELETE FROM webhook_events WHERE timestamp < ?', (cutoff_date,))
+                deleted_count = cursor.rowcount
+                
+                # Clean up old statistics
+                cutoff_date_str = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+                cursor.execute('DELETE FROM webhook_statistics WHERE date < ?', (cutoff_date_str,))
+                
+                conn.commit()
         
         return jsonify({
             'success': True,
@@ -400,18 +500,31 @@ def delete_all_events():
                 'error': 'Confirmation required. Send {"confirm": true} to delete all events.'
             }), 400
         
-        with db._get_connection() as conn:
-            cursor = conn.cursor()
-            
+        database_type = type(db).__name__
+        total_events = 0
+        
+        if database_type == 'MongoDatabase':
+            # MongoDB deletion
             # Count events before deletion
-            cursor.execute('SELECT COUNT(*) FROM webhook_events')
-            total_events = cursor.fetchone()[0]
+            total_events = db.db.webhook_events.count_documents({})
             
-            # Delete all events
-            cursor.execute('DELETE FROM webhook_events')
-            cursor.execute('DELETE FROM webhook_statistics')
-            
-            conn.commit()
+            # Delete all events and statistics
+            db.db.webhook_events.delete_many({})
+            db.db.webhook_statistics.delete_many({})
+        else:
+            # SQLite deletion
+            with db._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Count events before deletion
+                cursor.execute('SELECT COUNT(*) FROM webhook_events')
+                total_events = cursor.fetchone()[0]
+                
+                # Delete all events
+                cursor.execute('DELETE FROM webhook_events')
+                cursor.execute('DELETE FROM webhook_statistics')
+                
+                conn.commit()
         
         return jsonify({
             'success': True,

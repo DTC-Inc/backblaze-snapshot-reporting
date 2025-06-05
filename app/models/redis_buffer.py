@@ -62,6 +62,9 @@ class RedisEventBuffer:
         if self.running:
             return
             
+        # Try to flush any backup events from previous run first
+        self._recover_backup_events()
+        
         self.running = True
         self.flush_thread = threading.Thread(target=self._flush_worker, daemon=True)
         self.flush_thread.start()
@@ -153,9 +156,11 @@ class RedisEventBuffer:
             logger.error(f"Error in final flush: {e}")
     
     def _flush_events(self):
-        """Flush all pending events from Redis to SQLite"""
+        """Flush all pending events from Redis to SQLite using chunked batch inserts"""
         if not self.redis_client or not self.database:
             return
+        
+        flush_start_time = time.time()
         
         try:
             # Get all events from queue
@@ -166,44 +171,106 @@ class RedisEventBuffer:
                     break
                 try:
                     event_data = json.loads(event_json)
+                    # Remove our internal timestamp before saving
+                    event_data.pop('buffer_timestamp', None)
                     events.append(event_data)
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to decode buffered event: {e}")
-                    # Continue with other events
+                    continue
             
             if not events:
-                return
+                return 0
+                
+            # Performance logging for high-volume monitoring
+            batch_size = len(events)
+            logger.info(f"Redis flush: {batch_size} events queued for chunked batch insert")
             
-            logger.info(f"Flushing {len(events)} events from Redis to SQLite")
+            # Use chunked writes to prevent application freezes
+            chunk_size = 15000  # Process 15k events at a time - efficient for 5-minute intervals
+            total_saved = 0
+            max_retries = 3
             
-            # Batch save to SQLite
-            saved_count = 0
-            for event_data in events:
-                try:
-                    # Remove our internal timestamp before saving
-                    event_data.pop('buffer_timestamp', None)
-                    self.database.save_webhook_event(event_data)
-                    saved_count += 1
-                except Exception as e:
-                    logger.error(f"Failed to save event to SQLite: {e}")
-                    # Add back to backup queue for retry
-                    backup_json = json.dumps(event_data)
-                    self.redis_client.lpush(self.events_backup_key, backup_json)
+            # Process events in chunks to avoid long database locks
+            for i in range(0, len(events), chunk_size):
+                chunk = events[i:i + chunk_size]
+                chunk_number = (i // chunk_size) + 1
+                total_chunks = (len(events) + chunk_size - 1) // chunk_size
+                
+                logger.debug(f"Processing chunk {chunk_number}/{total_chunks} ({len(chunk)} events)")
+                
+                retry_delay = 0.1
+                chunk_saved = 0
+                
+                for attempt in range(max_retries):
+                    try:
+                        if hasattr(self.database, 'save_webhook_events_batch'):
+                            chunk_saved = self.database.save_webhook_events_batch(chunk)
+                        else:
+                            # Fallback to individual saves if batch method not available
+                            for event_data in chunk:
+                                try:
+                                    event_id = self.database.save_webhook_event(event_data)
+                                    if event_id:
+                                        chunk_saved += 1
+                                except Exception as e:
+                                    logger.error(f"Failed to save individual event: {e}")
+                                    continue
+                        
+                        total_saved += chunk_saved
+                        break  # Success, move to next chunk
+                        
+                    except Exception as e:
+                        if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                            logger.warning(f"Database locked during chunk {chunk_number} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                            continue
+                        else:
+                            logger.error(f"Failed to save chunk {chunk_number} (attempt {attempt + 1}/{max_retries}): {e}")
+                            
+                            # Move failed chunk to backup queue
+                            try:
+                                for event_data in chunk:
+                                    self.redis_client.lpush(self.events_backup_key, json.dumps(event_data))
+                                logger.info(f"Moved {len(chunk)} failed events from chunk {chunk_number} to backup queue")
+                            except Exception as backup_e:
+                                logger.error(f"Failed to backup chunk: {backup_e}")
+                            break  # Don't try more chunks if this one failed
+                
+                # Small pause between chunks to allow other operations
+                if i + chunk_size < len(events):
+                    time.sleep(0.01)  # 10ms pause between chunks
+            
+            # Performance metrics
+            flush_duration = time.time() - flush_start_time
+            events_per_second = total_saved / flush_duration if flush_duration > 0 else 0
+            
+            logger.info(f"Redis chunked flush completed: {total_saved}/{batch_size} events saved in {flush_duration:.2f}s ({events_per_second:.0f} events/sec)")
+            
+            # Performance warnings with chunking context
+            if flush_duration > 20.0:
+                logger.warning(f"Slow Redis flush: {flush_duration:.2f}s for {batch_size} events in {chunk_size}-event chunks. Consider increasing chunk size or REDIS_FLUSH_INTERVAL.")
+            elif batch_size > 400000:
+                logger.warning(f"Very large batch: {batch_size} events. Consider shorter flush intervals to reduce memory usage.")
             
             # Update stats
-            self.redis_client.hincrby(self.stats_key, 'total_flushed', saved_count)
-            self.redis_client.hincrby(self.stats_key, 'pending_flush', -saved_count)
-            self.redis_client.hset(self.stats_key, 'last_flush', datetime.now().isoformat())
+            if self.redis_client:
+                try:
+                    self.redis_client.hincrby(self.stats_key, 'total_flushed', total_saved)
+                    self.redis_client.hincrby(self.stats_key, 'pending_flush', -total_saved)
+                    self.redis_client.hset(self.stats_key, 'last_flush', datetime.now().isoformat())
+                    
+                    if total_saved != batch_size:
+                        failed_count = batch_size - total_saved
+                        self.redis_client.hincrby(self.stats_key, 'flush_errors', failed_count)
+                except Exception as e:
+                    logger.error(f"Failed to update Redis stats: {e}")
             
-            if saved_count != len(events):
-                self.redis_client.hincrby(self.stats_key, 'flush_errors', len(events) - saved_count)
-                logger.warning(f"Only saved {saved_count}/{len(events)} events to SQLite")
-            else:
-                logger.info(f"Successfully flushed {saved_count} events to SQLite")
-                
+            return total_saved
+                        
         except Exception as e:
-            logger.error(f"Error during flush operation: {e}")
-            self.redis_client.hincrby(self.stats_key, 'flush_errors', 1)
+            logger.error(f"Critical error during Redis chunked flush: {e}")
+            return 0
     
     def flush_now(self) -> int:
         """Manually trigger immediate flush of all pending events"""
@@ -250,4 +317,27 @@ class RedisEventBuffer:
             return True
         except Exception as e:
             logger.error(f"Failed to clear Redis buffer: {e}")
-            return False 
+            return False
+    
+    def _recover_backup_events(self):
+        """Recover any events from backup queue (from previous failed flushes)"""
+        if not self.redis_client or not self.database:
+            return
+            
+        try:
+            backup_count = self.redis_client.llen(self.events_backup_key)
+            if backup_count > 0:
+                logger.info(f"Found {backup_count} backup events from previous run, attempting recovery...")
+                
+                # Move backup events back to main queue for processing
+                while True:
+                    backup_event = self.redis_client.rpop(self.events_backup_key)
+                    if not backup_event:
+                        break
+                    self.redis_client.lpush(self.events_queue_key, backup_event)
+                
+                # Trigger immediate flush to process recovered events
+                self._flush_events()
+                logger.info("Backup event recovery completed")
+        except Exception as e:
+            logger.error(f"Error during backup event recovery: {e}") 

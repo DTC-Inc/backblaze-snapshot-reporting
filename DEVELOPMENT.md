@@ -65,26 +65,14 @@ We follow these naming conventions for Docker resources:
 
 ### Environment Variables
 
-All configuration is managed through environment variables in the stack.env file:
+Key environment variables and their purpose:
 
-1. **Stack Configuration**
-   - `STACK_NAME`: Prefix for all Docker resources (default: bbssr)
-   - `COMPOSE_PROJECT_NAME`: Project name for Docker Compose (default: bbssr)
-   - `PID`: Process ID for the container user (default: 1000)
-   - `GID`: Group ID for the container user (default: 1000)
-
-2. **Storage Configuration**
-   - `USE_DOCKER_VOLUMES`: Whether to use Docker volumes (true) or local paths (false)
-   - `DATA_PATH`: Base path for local data storage (default: ./data)
-   - `DATA_VOLUME_NAME`: Name for the data volume (default: bbssr_data)
-
-3. **Database Configuration**
-   - `USE_POSTGRES`: Whether to use PostgreSQL (true) or SQLite (false)
-   - `POSTGRES_*`: PostgreSQL connection settings
-
-4. **Backblaze Configuration**
-   - `B2_APPLICATION_KEY_ID`: Your Backblaze Key ID
-   - `B2_APPLICATION_KEY`: Your Backblaze Application Key
+- `DEBUG`: Enable Flask debug mode
+- `DATABASE_URI`: SQLite database file path or MongoDB connection string
+- `USE_MONGODB`: Whether to use MongoDB (true) or SQLite (false)
+- `MONGODB_*`: MongoDB connection settings
+- `REDIS_*`: Redis configuration for webhook event buffering
+- `B2_APPLICATION_KEY_ID` / `B2_APPLICATION_KEY`: Backblaze B2 credentials
 
 ## Development Workflow
 
@@ -189,26 +177,98 @@ SELECT * FROM snapshots LIMIT 5;
 .exit
 ```
 
-### PostgreSQL (Optional)
+### MongoDB (Optional)
 
-When using PostgreSQL, configure it through stack.env:
+When using MongoDB, configure it through stack.env:
 
 ```
-USE_POSTGRES=true
-POSTGRES_USER=bbssr_user
-POSTGRES_PASSWORD=secure_password_here
-POSTGRES_DB=bbssr_db
+USE_MONGODB=true
+MONGODB_URI=mongodb://localhost:27017/bbssr_db
 ```
 
-To access PostgreSQL:
+To access MongoDB:
 
 ```bash
-# Connect to the PostgreSQL container
-docker compose exec postgres psql -U bbssr_user -d bbssr_db
+# Connect to the MongoDB container
+docker compose exec mongo mongo bbssr_db
 
 # Run queries
 SELECT * FROM snapshots LIMIT 5;
-\q
+```
+
+### Database Migration
+
+For development and testing purposes, you can migrate from SQLite to MongoDB using the built-in migration scripts:
+
+#### Test Migration Readiness
+
+Before attempting a migration, test that both databases are accessible:
+
+```bash
+# Test if both SQLite and MongoDB are ready for migration
+docker compose exec web python scripts/test_migration_readiness.py
+```
+
+This will check:
+- SQLite database accessibility and table counts
+- MongoDB connection and basic operations
+- Available disk space
+- Migration time estimates based on data volume
+
+#### Migrate Development Data
+
+To migrate your development data from SQLite to MongoDB:
+
+```bash
+# 1. First, run a dry-run to see what would be migrated
+docker compose exec web python scripts/migrate_sqlite_to_mongodb.py --dry-run --verbose
+
+# 2. Create a backup of your SQLite database
+docker compose exec web mkdir -p /data/backups
+docker compose exec web cp /data/backblaze_snapshots.db /data/backups/dev_backup_$(date +%Y%m%d_%H%M%S).db
+
+# 3. Run the actual migration
+docker compose exec web python scripts/migrate_sqlite_to_mongodb.py --verbose
+
+# 4. Update your stack.env to use MongoDB
+# Change USE_MONGODB=1 and restart the containers
+docker compose up -d
+```
+
+#### Migration Script Options
+
+The migration script supports various options for development testing:
+
+```bash
+# Test with smaller batch sizes (useful for debugging)
+python scripts/migrate_sqlite_to_mongodb.py --batch-size 100 --verbose
+
+# Force migration without prompts (for automation)
+python scripts/migrate_sqlite_to_mongodb.py --force
+
+# Custom database paths for testing
+python scripts/migrate_sqlite_to_mongodb.py \
+  --sqlite-path /data/test.db \
+  --mongodb-uri mongodb://localhost:27017/test_db
+```
+
+#### Reverting to SQLite
+
+If you need to revert back to SQLite during development:
+
+```bash
+# 1. Stop the application
+docker compose stop web
+
+# 2. Update stack.env back to SQLite settings
+# USE_MONGODB=0
+# DATABASE_URI=sqlite:////data/backblaze_snapshots.db
+
+# 3. Restore backup if needed
+docker compose exec web cp /data/backups/dev_backup_YYYYMMDD_HHMMSS.db /data/backblaze_snapshots.db
+
+# 4. Restart application
+docker compose up -d
 ```
 
 ## Building for Production

@@ -19,6 +19,32 @@ class WebhookProcessor:
         self.redis_buffer = redis_buffer
         logger.info("Redis buffer enabled for webhook processor")
     
+    def get_bucket_configuration_cached(self, bucket_name):
+        """Get bucket configuration with Redis caching to avoid database locks"""
+        if self.redis_buffer and self.redis_buffer.redis_client:
+            # Try to get bucket config from Redis cache first
+            try:
+                config_key = f"bucket_config:{bucket_name}"
+                cached_config = self.redis_buffer.redis_client.get(config_key)
+                if cached_config:
+                    bucket_config = json.loads(cached_config)
+                    logger.debug(f"Retrieved bucket config for {bucket_name} from Redis cache")
+                    return bucket_config
+                else:
+                    # Not in cache, get from database and cache it
+                    bucket_config = self.db.get_bucket_configuration(bucket_name)
+                    if bucket_config:
+                        # Cache for 5 minutes
+                        self.redis_buffer.redis_client.setex(config_key, 300, json.dumps(bucket_config))
+                        logger.debug(f"Cached bucket config for {bucket_name} in Redis")
+                    return bucket_config
+            except Exception as e:
+                logger.warning(f"Redis bucket config cache error: {e}, falling back to database")
+                return self.db.get_bucket_configuration(bucket_name)
+        else:
+            # No Redis, use database directly
+            return self.db.get_bucket_configuration(bucket_name)
+    
     def verify_webhook_signature(self, payload, signature, secret):
         """Verify the webhook signature from Backblaze
         
@@ -101,7 +127,7 @@ class WebhookProcessor:
                 }
             
             # Check if we have configuration for this bucket
-            bucket_config = self.db.get_bucket_configuration(bucket_name)
+            bucket_config = self.get_bucket_configuration_cached(bucket_name)
             if not bucket_config or not bucket_config.get('webhook_enabled'):
                 logger.info(f"Received webhook for unconfigured/disabled bucket: {bucket_name}. Bucket config: {bucket_config}")
                 return {
@@ -153,7 +179,7 @@ class WebhookProcessor:
                 'receivedAt': datetime.now().isoformat()
             }
             
-            # Save the webhook event - try Redis first, fallback to direct SQLite
+            # Save the webhook event - use Redis buffering for SQLite, direct writes for MongoDB
             event_id = None
             if self.redis_buffer:
                 logger.debug(f"Attempting to buffer event in Redis for bucket {bucket_name}")
@@ -165,13 +191,33 @@ class WebhookProcessor:
                     event_id = temp_id
                     logger.info(f"Successfully buffered webhook event in Redis for bucket {bucket_name}, event: {event_type} (temp_id: {temp_id})")
                 else:
-                    logger.warning(f"Failed to buffer event in Redis, falling back to direct SQLite save")
-                    event_id = self.db.save_webhook_event(enhanced_payload)
-                    logger.info(f"Fallback: Saved webhook event {event_id} directly to SQLite for bucket {bucket_name}")
+                    logger.error(f"Failed to buffer event in Redis for bucket {bucket_name} - rejecting webhook to avoid database locks")
+                    return {
+                        'success': False,
+                        'error': 'Event buffering failed - webhook rejected to prevent database locks'
+                    }
             else:
-                # Direct SQLite save (Redis disabled or unavailable)
-                event_id = self.db.save_webhook_event(enhanced_payload)
-                logger.info(f"Saved webhook event {event_id} directly to SQLite for bucket {bucket_name}, event: {event_type}")
+                # Redis disabled - check if we're using MongoDB or SQLite
+                database_type = type(self.db).__name__
+                if database_type == 'MongoDatabase':
+                    # MongoDB can handle direct writes efficiently without locking issues
+                    logger.debug(f"Writing webhook event directly to MongoDB for bucket {bucket_name}")
+                    event_id = self.db.save_webhook_event(enhanced_payload)
+                    if event_id:
+                        logger.info(f"Successfully saved webhook event directly to MongoDB for bucket {bucket_name}, event: {event_type} (id: {event_id})")
+                    else:
+                        logger.error(f"Failed to save webhook event directly to MongoDB for bucket {bucket_name}")
+                        return {
+                            'success': False,
+                            'error': 'Failed to save event to MongoDB'
+                        }
+                else:
+                    # SQLite without Redis - reject webhook to avoid database locks during high load
+                    logger.error(f"Redis buffering disabled with SQLite - rejecting webhook for bucket {bucket_name} to avoid database locks")
+                    return {
+                        'success': False,
+                        'error': 'Redis buffering required for SQLite webhook processing'
+                    }
             
             return {
                 'success': True,
@@ -215,7 +261,7 @@ class WebhookProcessor:
         }
         
         if include_secret and bucket_name:
-            config = self.db.get_bucket_configuration(bucket_name)
+            config = self.get_bucket_configuration_cached(bucket_name)
             if config:
                 result['webhook_secret'] = config.get('webhook_secret')
         

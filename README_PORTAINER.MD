@@ -2,6 +2,15 @@
 
 This guide explains how to deploy the Backblaze Snapshot Reporting application using Portainer.
 
+## **Important: Simplified Configuration**
+
+This Portainer stack is designed for easy deployment with **minimal configuration required**:
+
+- **SQLite Database**: Uses file-based SQLite (no external database setup needed)
+- **MongoDB Support**: Optional MongoDB can be enabled for high-volume webhook events  
+- **Redis Buffering**: Enabled by default for optimal webhook performance
+- **Automatic Volumes**: Creates and manages Docker volumes automatically
+
 ## Prerequisites
 
 1. Create required directories on the host:

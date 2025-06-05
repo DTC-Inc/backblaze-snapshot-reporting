@@ -1,3 +1,6 @@
+# External volumes configuration for production deployments
+# This creates named volumes that persist data across container restarts
+
 version: '3.8'
 
 volumes:
@@ -5,5 +8,5 @@ volumes:
     name: ${DATA_VOLUME_NAME:-bbssr_data}
     external: true
   bbssr_db:
-    name: ${POSTGRES_VOLUME_NAME:-bbssr_db}
+    name: ${MONGODB_VOLUME_NAME:-bbssr_db}
     external: true

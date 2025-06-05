@@ -1,11 +1,221 @@
 {% extends "base.html" %}
 {% block title %}{{ page_title }} – Backblaze Snapshot Reporting{% endblock %}
 
+{% block head %}
+{{ super() }}
+<style>
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
+}
+
+.real-time-update {
+    border: 2px solid rgba(0, 123, 255, 0.3) !important;
+    animation: real-time-flash 0.3s ease-in-out;
+}
+
+@keyframes real-time-flash {
+    0% { background-color: rgba(0, 123, 255, 0.1); }
+    100% { background-color: transparent; }
+}
+
+/* Fancy Billing Display Styles */
+.billing-display {
+    background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+    border-radius: 1rem;
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+    transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+}
+
+.billing-display::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+    transition: left 0.5s ease-in-out;
+}
+
+.billing-display.updating::before {
+    left: 100%;
+}
+
+.billing-display.green {
+    background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+    box-shadow: 0 10px 25px rgba(34, 197, 94, 0.2);
+}
+
+.billing-display.yellow {
+    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+    box-shadow: 0 10px 25px rgba(245, 158, 11, 0.2);
+}
+
+.billing-display.orange {
+    background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+    box-shadow: 0 10px 25px rgba(249, 115, 22, 0.2);
+}
+
+.billing-display.red {
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+    box-shadow: 0 10px 25px rgba(239, 68, 68, 0.2);
+}
+
+.billing-amount {
+    font-size: 3.5rem;
+    font-weight: 800;
+    color: white;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    margin: 0;
+    transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    letter-spacing: -0.025em;
+}
+
+@media (max-width: 768px) {
+    .billing-amount {
+        font-size: 2.5rem;
+    }
+}
+
+.billing-title {
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.billing-subtitle {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 0.95rem;
+    margin-top: 0.5rem;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.billing-details {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 1rem;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.billing-breakdown {
+    display: flex;
+    gap: 2rem;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 0.9rem;
+    flex-wrap: wrap;
+}
+
+.billing-breakdown > div {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.billing-status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 0.9rem;
+}
+
+.status-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.8);
+    animation: pulse-dot 2s infinite;
+}
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 0.8; }
+    50% { opacity: 0.4; }
+}
+
+.billing-loading {
+    color: rgba(255, 255, 255, 0.7);
+    font-style: italic;
+}
+
+.object-item {
+    transition: all 0.2s ease-in-out !important;
+    border-radius: 0.375rem !important;
+}
+
+.object-item:hover {
+    background-color: rgba(13, 110, 253, 0.1) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.object-item:active {
+    transform: translateY(0px);
+    background-color: rgba(13, 110, 253, 0.2) !important;
+}
+
+.object-item .badge {
+    transition: all 0.2s ease-in-out;
+}
+
+.object-item:hover .badge {
+    transform: scale(1.05);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="container-fluid mt-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h2><i class="fas fa-tachometer-alt me-2"></i>{{ page_title }}</h2>
-        <div id="lastUpdated" class="text-muted small">Data last refreshed: Never</div>
+        <div class="d-flex align-items-center gap-2">
+            <div id="realTimeIndicator" class="badge bg-secondary" style="display: none;">
+                <i class="fas fa-circle me-1"></i>Real-time
+            </div>
+            <div id="lastUpdated" class="text-muted small">Data last refreshed: Never</div>
+        </div>
+    </div>
+
+    <!-- Fancy Real-time Billing Display -->
+    <div id="billingDisplay" class="billing-display green" style="cursor: pointer;" title="Click to configure billing settings">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <div class="billing-title">
+                    <i class="fas fa-calendar me-2"></i>Billing Cycle Status
+                    <small class="ms-2 opacity-75">(click to configure)</small>
+                </div>
+                <div class="billing-amount" id="billingAmount">
+                    <span class="billing-loading">Loading...</span>
+                </div>
+                <div class="billing-subtitle" id="billingMonth">Calculating costs...</div>
+            </div>
+            <div class="col-md-4 text-end">
+                <div class="billing-title">
+                    <i class="fas fa-chart-line me-2"></i>API Activity Cost
+                </div>
+                <div class="billing-amount" id="activityCost" style="font-size: 2.5rem;">
+                    <span class="billing-loading">$0.00</span>
+                </div>
+                <div class="billing-subtitle">
+                    <small>Growing from usage</small>
+                </div>
+            </div>
+        </div>
+        <div class="billing-status" id="billingStatus">
+            <div class="status-indicator"></div>
+            <span>Real-time monitoring active</span>
+        </div>
     </div>
 
     <!-- Filters Row -->
@@ -22,10 +232,14 @@
         <div class="col-md-4 col-lg-3">
             <label for="timeFrameFilter" class="form-label">Time Frame:</label>
             <select id="timeFrameFilter" class="form-select form-select-sm">
+                <option value="last_1_hour" selected>Last 1 Hour</option>
+                <option value="last_6_hours">Last 6 Hours</option>
+                <option value="last_12_hours">Last 12 Hours</option>
+                <option value="last_24_hours">Last 24 Hours</option>
                 <option value="today">Today</option>
                 <option value="yesterday">Yesterday</option>
                 <option value="this_week">This Week (Mon - Today)</option>
-                <option value="last_7_days" selected>Last 7 Days</option>
+                <option value="last_7_days">Last 7 Days</option>
                 <option value="this_month">This Month</option>
                 <option value="last_30_days">Last 30 Days</option>
                 <option value="this_quarter">This Quarter</option>
@@ -128,6 +342,58 @@
         </div>
     </div>
 
+    <!-- Trend Analysis Section -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-chart-line me-2"></i>Growth Trend Analysis & Predictions
+                    </h5>
+                    <small id="trendReliability" class="badge bg-secondary">Calculating...</small>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6 col-lg-3">
+                            <div class="text-center">
+                                <h6 class="text-muted">Daily Growth Rate</h6>
+                                <p class="fs-5 fw-bold" id="dailyGrowthRate">-</p>
+                            </div>
+                        </div>
+                        <div class="col-md-6 col-lg-3">
+                            <div class="text-center">
+                                <h6 class="text-muted">Projected Monthly Growth</h6>
+                                <p class="fs-5 fw-bold" id="monthlyGrowth">-</p>
+                            </div>
+                        </div>
+                        <div class="col-md-6 col-lg-3">
+                            <div class="text-center">
+                                <h6 class="text-muted">Projected Size in 30 Days</h6>
+                                <p class="fs-5 fw-bold" id="projectedSize30">-</p>
+                            </div>
+                        </div>
+                        <div class="col-md-6 col-lg-3">
+                            <div class="text-center">
+                                <h6 class="text-muted">Projected Size in 1 Year</h6>
+                                <p class="fs-5 fw-bold" id="projectedSize365">-</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <div class="card bg-light">
+                                <div class="card-header">Growth Trend Chart with Predictions</div>
+                                <div class="card-body" style="height: 300px; position: relative;">
+                                    <canvas id="trendChart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Top 10 Lists (Placeholder for now) -->
     <div class="row">
         <div class="col-12">
@@ -174,13 +440,184 @@
                 </ul>
             </div>
         </div>
+        <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card">
+                <div class="card-header">
+                    <i class="fas fa-download me-2"></i>
+                    Top 10 Largest Objects
+                </div>
+                <ul class="list-group list-group-flush" id="topLargestObjectsList">
+                    <li class="list-group-item">Loading...</li>
+                </ul>
+            </div>
+        </div>
     </div>
 
 </div> <!-- container-fluid -->
+
+<!-- Object Details Modal -->
+<div class="modal fade" id="objectDetailsModal" tabindex="-1" aria-labelledby="objectDetailsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="objectDetailsModalLabel">
+                    <i class="fas fa-file-alt me-2"></i>Object Details
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="container-fluid">
+                    <div class="row">
+                        <div class="col-12 mb-3">
+                            <div class="card bg-light">
+                                <div class="card-body">
+                                    <h6 class="card-title text-primary">
+                                        <i class="fas fa-folder me-1"></i>Object Path
+                                    </h6>
+                                    <p class="card-text font-monospace" id="modalObjectPath" style="word-break: break-all;">-</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <h6 class="card-title">
+                                        <i class="fas fa-hdd me-1 text-info"></i>File Size
+                                    </h6>
+                                    <p class="fs-4 fw-bold text-primary" id="modalObjectSize">-</p>
+                                    <small class="text-muted">
+                                        <div id="modalObjectSizeDetails">-</div>
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <h6 class="card-title">
+                                        <i class="fas fa-bucket me-1 text-success"></i>Bucket
+                                    </h6>
+                                    <p class="fs-5 fw-bold" id="modalBucketName">-</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <h6 class="card-title">
+                                        <i class="fas fa-clock me-1 text-warning"></i>Event Time
+                                    </h6>
+                                    <p class="fw-bold" id="modalEventTime">-</p>
+                                    <small class="text-muted">When the B2 event occurred</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <h6 class="card-title">
+                                        <i class="fas fa-calendar me-1 text-info"></i>Processed Time
+                                    </h6>
+                                    <p class="fw-bold" id="modalProcessedTime">-</p>
+                                    <small class="text-muted">When our system received the event</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <h6 class="card-title">
+                                        <i class="fas fa-tag me-1 text-secondary"></i>Event Type
+                                    </h6>
+                                    <p class="fw-bold" id="modalEventType">-</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <h6 class="card-title">
+                                        <i class="fas fa-fingerprint me-1 text-secondary"></i>Request ID
+                                    </h6>
+                                    <p class="font-monospace small" id="modalRequestId" style="word-break: break-all;">-</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="fas fa-times me-1"></i>Close
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Billing Configuration Modal -->
+<div class="modal fade" id="billingConfigModal" tabindex="-1" aria-labelledby="billingConfigModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="billingConfigModalLabel">
+                    <i class="fas fa-cog me-2"></i>Billing Configuration
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="billingConfigForm">
+                    <div class="mb-3">
+                        <label for="baselineAmount" class="form-label">
+                            <i class="fas fa-dollar-sign me-1"></i>Baseline Monthly Amount
+                        </label>
+                        <input type="number" class="form-control" id="baselineAmount" 
+                               placeholder="15000" min="0" step="0.01" required>
+                        <div class="form-text">Your typical monthly Backblaze bill (before API activity)</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="billingCycleStart" class="form-label">
+                            <i class="fas fa-calendar-alt me-1"></i>Billing Cycle Start Date
+                        </label>
+                        <input type="date" class="form-control" id="billingCycleStart" required>
+                        <div class="form-text">When your current billing cycle started</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="discountPercentage" class="form-label">
+                            <i class="fas fa-percent me-1"></i>Discount Percentage (Optional)
+                        </label>
+                        <input type="number" class="form-control" id="discountPercentage" 
+                               placeholder="0" min="0" max="100" step="0.1">
+                        <div class="form-text">Any volume discount you receive</div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="saveBillingConfig">
+                    <i class="fas fa-save me-1"></i>Save Configuration
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
+<!-- Socket.IO for real-time updates -->
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <!-- Chart.js -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@2.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
@@ -207,6 +644,188 @@
 
         let objectOperationsChart = null;
         let dataVolumeChart = null;
+        let trendChart = null;
+        let showTrendLines = true; // Toggle state for trend lines
+        let socket = null;
+        
+        // Initialize WebSocket for real-time updates
+        function initializeWebSocket() {
+            const realTimeIndicator = document.getElementById('realTimeIndicator');
+            
+            if (typeof io !== 'undefined') {
+                try {
+                    socket = io('/ws', {
+                        // Add connection options to prevent auto-reconnect issues
+                        autoConnect: true,
+                        reconnection: true,
+                        reconnectionDelay: 5000,
+                        reconnectionAttempts: 3,
+                        timeout: 10000,
+                        forceNew: false
+                    });
+                    
+                    socket.on('connect', () => {
+                        console.log('Dashboard WebSocket connected');
+                        lastUpdatedEl.textContent = 'Live updates: Connected';
+                        realTimeIndicator.className = 'badge bg-success';
+                        realTimeIndicator.innerHTML = '<i class="fas fa-circle me-1"></i>Live';
+                        realTimeIndicator.style.display = 'block';
+                        
+                        // Send current filter selection to backend
+                        sendCurrentFiltersToBackend();
+                    });
+                    
+                    socket.on('disconnect', (reason) => {
+                        console.log('Dashboard WebSocket disconnected:', reason);
+                        lastUpdatedEl.textContent = 'Live updates: Disconnected';
+                        realTimeIndicator.className = 'badge bg-danger';
+                        realTimeIndicator.innerHTML = '<i class="fas fa-circle me-1"></i>Offline';
+                    });
+                    
+                    socket.on('connect_error', (error) => {
+                        console.warn('WebSocket connection error:', error);
+                        lastUpdatedEl.textContent = 'Live updates: Connection error';
+                        realTimeIndicator.className = 'badge bg-warning';
+                        realTimeIndicator.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i>Error';
+                        realTimeIndicator.style.display = 'block';
+                    });
+                    
+                    socket.on('error', (error) => {
+                        console.warn('WebSocket error:', error);
+                        // Don't reload the page on WebSocket errors
+                    });
+                    
+                    // Handle real-time dashboard updates
+                    socket.on('dashboard_update', (data) => {
+                        try {
+                            updateDashboardStats(data);
+                            updateLastUpdatedTime();
+                            // Flash the indicator to show data is updating
+                            realTimeIndicator.style.animation = 'none';
+                            realTimeIndicator.offsetHeight; // Trigger reflow
+                            realTimeIndicator.style.animation = 'pulse 0.5s ease-in-out';
+                        } catch (error) {
+                            console.error('Error handling dashboard update:', error);
+                        }
+                    });
+                    
+                    console.log('WebSocket initialized for dashboard');
+                } catch (error) {
+                    console.error('Failed to initialize WebSocket:', error);
+                    lastUpdatedEl.textContent = 'Live updates: Failed to initialize';
+                    realTimeIndicator.className = 'badge bg-danger';
+                    realTimeIndicator.innerHTML = '<i class="fas fa-times me-1"></i>Failed';
+                    realTimeIndicator.style.display = 'block';
+                }
+            } else {
+                console.warn('Socket.IO not available - real-time updates disabled');
+                lastUpdatedEl.textContent = 'Live updates: Not available';
+                realTimeIndicator.className = 'badge bg-warning';
+                realTimeIndicator.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i>Unavailable';
+                realTimeIndicator.style.display = 'block';
+            }
+        }
+        
+        // Send current filter selection to backend
+        function sendCurrentFiltersToBackend() {
+            if (!socket) return;
+            
+            const currentFilters = {
+                time_frame: timeFrameFilter.value,
+                bucket_name: bucketFilter.value,
+                start_date: startDateInput.value || null,
+                end_date: endDateInput.value || null
+            };
+            
+            socket.emit('update_dashboard_timeframe', currentFilters);
+            console.log('Sent current filters to backend:', currentFilters);
+        }
+        
+        // Update dashboard statistics with real-time data
+        function updateDashboardStats(data) {
+            // Update summary cards with live data from selected timeframe
+            const objectsAddedEl = document.getElementById('summaryObjectsAdded');
+            const sizeAddedEl = document.getElementById('summarySizeAdded');
+            const objectsDeletedEl = document.getElementById('summaryObjectsDeleted');
+            const sizeDeletedEl = document.getElementById('summarySizeDeleted');
+            const netObjectsEl = document.getElementById('summaryNetObjects');
+            const netSizePeriodEl = document.getElementById('summaryNetSizePeriod');
+            const netSizeTodayEl = document.getElementById('summaryNetSizeToday');
+            
+            // Add visual feedback for updates
+            function flashElement(element) {
+                element.style.transition = 'background-color 0.3s ease';
+                element.style.backgroundColor = '#e3f2fd';
+                setTimeout(() => {
+                    element.style.backgroundColor = '';
+                }, 300);
+            }
+            
+            // Update values with smooth transitions - use generic field names from backend
+            if (objectsAddedEl) {
+                const newValue = (data.objects_added || 0).toLocaleString();
+                if (objectsAddedEl.textContent !== newValue) {
+                    objectsAddedEl.textContent = newValue;
+                    flashElement(objectsAddedEl.closest('.card'));
+                }
+            }
+            
+            if (sizeAddedEl) {
+                const newValue = formatBytes(data.size_added || 0);
+                if (sizeAddedEl.textContent !== newValue) {
+                    sizeAddedEl.textContent = newValue;
+                    flashElement(sizeAddedEl.closest('.card'));
+                }
+            }
+            
+            if (objectsDeletedEl) {
+                const newValue = (data.objects_deleted || 0).toLocaleString();
+                if (objectsDeletedEl.textContent !== newValue) {
+                    objectsDeletedEl.textContent = newValue;
+                    flashElement(objectsDeletedEl.closest('.card'));
+                }
+            }
+            
+            if (sizeDeletedEl) {
+                const newValue = formatBytes(data.size_deleted || 0);
+                if (sizeDeletedEl.textContent !== newValue) {
+                    sizeDeletedEl.textContent = newValue;
+                    flashElement(sizeDeletedEl.closest('.card'));
+                }
+            }
+            
+            if (netObjectsEl) {
+                const newValue = (data.net_object_change || 0).toLocaleString();
+                if (netObjectsEl.textContent !== newValue) {
+                    netObjectsEl.textContent = newValue;
+                    flashElement(netObjectsEl.closest('.card'));
+                }
+            }
+            
+            if (netSizePeriodEl) {
+                const newValue = formatBytes(data.net_size_change || 0);
+                if (netSizePeriodEl.textContent !== newValue) {
+                    netSizePeriodEl.textContent = newValue;
+                    flashElement(netSizePeriodEl.closest('.card'));
+                }
+            }
+            
+            // Update the "Net Data Change Today" card with today's data
+            if (netSizeTodayEl) {
+                const newValue = formatBytes(data.net_size_change_today || 0);
+                if (netSizeTodayEl.textContent !== newValue) {
+                    netSizeTodayEl.textContent = newValue;
+                    flashElement(netSizeTodayEl.closest('.card'));
+                }
+            }
+            
+            console.log('Dashboard stats updated for', data.timeframe + ':', data);
+        }
+        
+        function updateLastUpdatedTime() {
+            const now = new Date();
+            lastUpdatedEl.textContent = `Live updates: ${now.toLocaleTimeString()}`;
+        }
 
         // Top 10 List Elements
         const topSizeAddedListEl = document.getElementById('topSizeAddedList');
@@ -214,6 +833,7 @@
         const topObjectsAddedListEl = document.getElementById('topObjectsAddedList');
         const topObjectsRemovedListEl = document.getElementById('topObjectsRemovedList');
         const topStaleBucketsListEl = document.getElementById('topStaleBucketsList');
+        const topLargestObjectsListEl = document.getElementById('topLargestObjectsList');
 
         timeFrameFilter.addEventListener('change', function() {
             if (this.value === 'custom') {
@@ -230,13 +850,17 @@
                     labels: chartData.map(d => d.date),
                     datasets: datasetsConfig.map(config => ({
                         label: config.label,
-                        data: chartData.map(d => d[config.key]),
+                        data: config.data || chartData.map(d => d[config.key]),
                         backgroundColor: config.backgroundColor,
                         borderColor: config.borderColor,
-                        borderWidth: 1,
+                        borderWidth: config.borderWidth || 1,
+                        borderDash: config.borderDash || undefined,
                         fill: config.fill !== undefined ? config.fill : false,
-                        type: config.type || 'bar', // Allow mixed chart types
+                        type: config.type || 'bar',
                         yAxisID: config.yAxisID || 'y',
+                        pointRadius: config.pointRadius !== undefined ? config.pointRadius : undefined,
+                        pointStyle: config.pointStyle || undefined,
+                        pointHoverRadius: config.pointHoverRadius || undefined
                     }))
                 },
                 options: {
@@ -269,6 +893,123 @@
                         tooltip: {
                             mode: 'index',
                             intersect: false,
+                            filter: function(tooltipItem) {
+                                // Hide trend line tooltips to avoid clutter
+                                return !tooltipItem.dataset.label.includes('Trend');
+                            }
+                        },
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        }
+                    }
+                }
+            };
+        }
+
+        function getTrendChartConfig(historicalData, predictionsData, trendAnalysis) {
+            const allData = [...historicalData, ...predictionsData];
+            
+            return {
+                type: 'line',
+                data: {
+                    labels: allData.map(d => d.date),
+                    datasets: [
+                        {
+                            label: 'Net Size Change (Historical)',
+                            data: historicalData.map(d => d.size_added - d.size_deleted),
+                            borderColor: 'rgb(54, 162, 235)',
+                            backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                            borderWidth: 2,
+                            fill: false,
+                            pointRadius: 4,
+                            pointHoverRadius: 6
+                        },
+                        {
+                            label: 'Net Size Change (Predicted)',
+                            data: [
+                                ...Array(historicalData.length).fill(null),
+                                ...predictionsData.map(d => d.net_size)
+                            ],
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            borderWidth: 2,
+                            borderDash: [5, 5], // Dashed line for predictions
+                            fill: false,
+                            pointRadius: 3,
+                            pointStyle: 'triangle',
+                            pointHoverRadius: 5
+                        },
+                        {
+                            label: 'Trend Line',
+                            data: allData.map((_, index) => {
+                                if (trendAnalysis && trendAnalysis.net_size) {
+                                    return trendAnalysis.net_size.slope * index + trendAnalysis.net_size.intercept;
+                                }
+                                return null;
+                            }),
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'transparent',
+                            borderWidth: 1,
+                            fill: false,
+                            pointRadius: 0,
+                            borderDash: [2, 2]
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                tooltipFormat: 'MMM d, yyyy',
+                                displayFormats: {
+                                    day: 'MMM d'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Net Data Change (Bytes)'
+                            },
+                            ticks: {
+                                callback: function(value) {
+                                    return formatBytes(value);
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    let label = context.dataset.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    if (context.parsed.y !== null) {
+                                        label += formatBytes(context.parsed.y);
+                                    }
+                                    return label;
+                                }
+                            }
+                        },
+                        legend: {
+                            display: true,
+                            position: 'top'
                         }
                     }
                 }
@@ -298,82 +1039,311 @@
             }
 
             try {
-                lastUpdatedEl.textContent = 'Loading...';
-                // Fetch summary stats
-                const summaryRes = await fetch(`/api/dashboard/stats/summary?${queryParams}`);
-                const summaryData = await summaryRes.json();
+                lastUpdatedEl.textContent = 'Loading trend data...';
+                
+                // Show loading indicators on charts
+                showChartLoadingState();
+                
+                // Fetch summary stats with error handling
+                let summaryData;
+                try {
+                    const summaryRes = await fetch(`/api/dashboard/stats/summary?${queryParams}`);
+                    if (!summaryRes.ok) {
+                        throw new Error(`HTTP ${summaryRes.status}: ${summaryRes.statusText}`);
+                    }
+                    summaryData = await summaryRes.json();
+                } catch (fetchError) {
+                    console.error("Error fetching summary stats:", fetchError);
+                    lastUpdatedEl.textContent = `Error loading summary: ${fetchError.message}`;
+                    hideChartLoadingState();
+                    return; // Exit early on fetch error
+                }
 
                 if (summaryData.error) {
-                    console.error("Error fetching summary stats:", summaryData.error);
+                    console.error("Error in summary stats response:", summaryData.error);
                     lastUpdatedEl.textContent = `Error loading: ${summaryData.error}`;
+                    hideChartLoadingState();
                     return;
                 }
 
-                document.getElementById('summaryObjectsAdded').textContent = (summaryData.objects_added || 0).toLocaleString();
-                document.getElementById('summarySizeAdded').textContent = formatBytes(summaryData.size_added || 0);
-                document.getElementById('summaryObjectsDeleted').textContent = (summaryData.objects_deleted || 0).toLocaleString();
-                document.getElementById('summarySizeDeleted').textContent = formatBytes(summaryData.size_deleted || 0);
-                document.getElementById('summaryNetObjects').textContent = (summaryData.net_object_change || 0).toLocaleString();
-                document.getElementById('summaryNetSizePeriod').textContent = formatBytes(summaryData.net_size_change || 0);
-                document.getElementById('summaryNetSizeToday').textContent = formatBytes(summaryData.net_size_change_today || 0);
+                // Update summary display safely
+                try {
+                    document.getElementById('summaryObjectsAdded').textContent = (summaryData.objects_added || 0).toLocaleString();
+                    document.getElementById('summarySizeAdded').textContent = formatBytes(summaryData.size_added || 0);
+                    document.getElementById('summaryObjectsDeleted').textContent = (summaryData.objects_deleted || 0).toLocaleString();
+                    document.getElementById('summarySizeDeleted').textContent = formatBytes(summaryData.size_deleted || 0);
+                    document.getElementById('summaryNetObjects').textContent = (summaryData.net_object_change || 0).toLocaleString();
+                    document.getElementById('summaryNetSizePeriod').textContent = formatBytes(summaryData.net_size_change || 0);
+                    document.getElementById('summaryNetSizeToday').textContent = formatBytes(summaryData.net_size_change_today || 0);
+                } catch (updateError) {
+                    console.error("Error updating summary display:", updateError);
+                }
 
-                // Fetch daily breakdown stats
-                const dailyRes = await fetch(`/api/dashboard/stats/daily_breakdown?${queryParams}`);
-                const dailyData = await dailyRes.json();
+                // Fetch daily breakdown stats with error handling
+                let dailyData;
+                try {
+                    const dailyRes = await fetch(`/api/dashboard/stats/daily_breakdown?${queryParams}`);
+                    if (!dailyRes.ok) {
+                        throw new Error(`HTTP ${dailyRes.status}: ${dailyRes.statusText}`);
+                    }
+                    dailyData = await dailyRes.json();
+                } catch (fetchError) {
+                    console.error("Error fetching daily stats:", fetchError);
+                    lastUpdatedEl.textContent = `Error loading daily data: ${fetchError.message}`;
+                    hideChartLoadingState();
+                    return; // Exit early on fetch error
+                }
 
                 if (dailyData.error) {
-                    console.error("Error fetching daily stats:", dailyData.error);
+                    console.error("Error in daily stats response:", dailyData.error);
                     lastUpdatedEl.textContent = `Error loading daily: ${dailyData.error}`;
+                    hideChartLoadingState();
                     return;
                 }
                 
-                // Object Operations Chart
-                const objectOpsCtx = document.getElementById('objectOperationsChart').getContext('2d');
-                if (objectOperationsChart) objectOperationsChart.destroy();
-                objectOperationsChart = new Chart(objectOpsCtx, getChartConfig(
-                    dailyData.daily_data || [], 
-                    'Number of Objects',
-                    [
-                        { label: 'Objects Added', key: 'objects_added', backgroundColor: 'rgba(75, 192, 192, 0.5)', borderColor: 'rgb(75, 192, 192)', type: 'line', fill: true },
-                        { label: 'Objects Deleted', key: 'objects_deleted', backgroundColor: 'rgba(255, 99, 132, 0.5)', borderColor: 'rgb(255, 99, 132)', type: 'line', fill: true }
-                    ]
-                ));
-
-                // Data Volume Chart
-                const dataVolumeCtx = document.getElementById('dataVolumeChart').getContext('2d');
-                if (dataVolumeChart) dataVolumeChart.destroy();
-                dataVolumeChart = new Chart(dataVolumeCtx, getChartConfig(
-                    dailyData.daily_data || [], 
-                    'Data Size',
-                    [
-                        { label: 'Size Added', key: 'size_added', backgroundColor: 'rgba(54, 162, 235, 0.5)', borderColor: 'rgb(54, 162, 235)', type: 'bar' },
-                        { label: 'Size Deleted', key: 'size_deleted', backgroundColor: 'rgba(255, 159, 64, 0.5)', borderColor: 'rgb(255, 159, 64)', type: 'bar' }
-                    ]
-                ));
-                dataVolumeChart.options.scales.y.ticks = { callback: function(value) { return formatBytes(value); } };
-                dataVolumeChart.options.plugins.tooltip.callbacks = {
-                    label: function(context) {
-                        let label = context.dataset.label || '';
-                        if (label) {
-                            label += ': ';
-                        }
-                        if (context.parsed.y !== null) {
-                            label += formatBytes(context.parsed.y);
-                        }
-                        return label;
-                    }
-                };
-                dataVolumeChart.update();
-
-                // Fetch and render Top 10 lists
-                fetchAndRenderTopLists(queryParams);
+                // Render charts with enhanced trend line support
+                try {
+                    await renderChartsWithTrends(dailyData, queryParams);
+                } catch (renderError) {
+                    console.error("Error rendering charts:", renderError);
+                    lastUpdatedEl.textContent = `Error rendering charts: ${renderError.message}`;
+                    hideChartLoadingState();
+                    return;
+                }
 
                 lastUpdatedEl.textContent = `Data last refreshed: ${new Date().toLocaleString()}`;
+                
+                // Log trend line status for debugging
+                const trendData = dailyData.trend_analysis || {};
+                const hasTrends = Object.keys(trendData).length > 0;
+                console.log(`Trend lines ${hasTrends ? 'enabled' : 'disabled'} - Data points: ${(dailyData.daily_data || []).length}`);
 
             } catch (error) {
                 console.error("Failed to fetch dashboard data:", error);
                 lastUpdatedEl.textContent = `Error loading: ${error.message}`;
+                hideChartLoadingState();
+                
+                // Show user-friendly error message but don't reload page
+                const summaryCards = document.querySelectorAll('[id^="summary"]');
+                summaryCards.forEach(card => {
+                    if (card) card.textContent = 'Error loading';
+                });
             }
+        }
+
+        function showChartLoadingState() {
+            // Add loading overlay to chart containers
+            const chartContainers = ['objectOperationsChart', 'dataVolumeChart', 'trendChart'];
+            chartContainers.forEach(chartId => {
+                const container = document.getElementById(chartId)?.parentElement;
+                if (container && !container.querySelector('.chart-loading')) {
+                    const loadingDiv = document.createElement('div');
+                    loadingDiv.className = 'chart-loading position-absolute top-50 start-50 translate-middle';
+                    loadingDiv.innerHTML = '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading trends...</span></div>';
+                    loadingDiv.style.zIndex = '1000';
+                    container.style.position = 'relative';
+                    container.appendChild(loadingDiv);
+                }
+            });
+        }
+
+        function hideChartLoadingState() {
+            // Remove loading overlays
+            document.querySelectorAll('.chart-loading').forEach(el => el.remove());
+        }
+
+        async function renderChartsWithTrends(dailyData, queryParams) {
+            const chartData = dailyData.daily_data || [];
+            const trendData = dailyData.trend_analysis || {};
+            
+            // Store data globally for trend toggle functionality
+            window.lastChartData = chartData;
+            window.lastTrendData = trendData;
+            
+            // Validate data for trend calculations
+            const hasMinimumDataForTrends = chartData.length >= 2;
+            const trendAvailable = hasMinimumDataForTrends && Object.keys(trendData).length > 0 && showTrendLines;
+            
+            if (!hasMinimumDataForTrends) {
+                console.warn('Insufficient data for trend analysis. Need at least 2 data points.');
+            }
+
+            // Enhanced Object Operations Chart with robust trend lines
+            await renderObjectOperationsChart(chartData, trendData, trendAvailable);
+            
+            // Enhanced Data Volume Chart with robust trend lines
+            await renderDataVolumeChart(chartData, trendData, trendAvailable);
+            
+            // Fetch and render Top 10 lists
+            fetchAndRenderTopLists(queryParams);
+
+            // Fetch and render trend data with better error handling
+            await fetchAndRenderTrendData(queryParams);
+            
+            // Hide loading state
+            hideChartLoadingState();
+        }
+
+        async function renderObjectOperationsChart(chartData, trendData, trendAvailable) {
+            const objectOpsCtx = document.getElementById('objectOperationsChart').getContext('2d');
+            if (objectOperationsChart) {
+                objectOperationsChart.destroy();
+                objectOperationsChart = null;
+            }
+            
+            const objectOpsDatasets = [
+                { 
+                    label: 'Objects Added', 
+                    key: 'objects_added', 
+                    backgroundColor: 'rgba(75, 192, 192, 0.5)', 
+                    borderColor: 'rgb(75, 192, 192)', 
+                    type: 'line', 
+                    fill: true 
+                },
+                { 
+                    label: 'Objects Deleted', 
+                    key: 'objects_deleted', 
+                    backgroundColor: 'rgba(255, 99, 132, 0.5)', 
+                    borderColor: 'rgb(255, 99, 132)', 
+                    type: 'line', 
+                    fill: true 
+                }
+            ];
+            
+            // Add trend lines if available and valid
+            if (trendAvailable && trendData.objects_added_trend && validateTrendData(trendData.objects_added_trend)) {
+                objectOpsDatasets.push({
+                    label: `Objects Added Trend (${trendData.objects_added_trend.trend_direction})`,
+                    data: chartData.map((_, index) => Math.max(0, trendData.objects_added_trend.slope * index + trendData.objects_added_trend.intercept)),
+                    borderColor: 'rgba(75, 192, 192, 0.8)',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    borderDash: [5, 5],
+                    type: 'line',
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 3
+                });
+            }
+            
+            if (trendAvailable && trendData.objects_deleted_trend && validateTrendData(trendData.objects_deleted_trend)) {
+                objectOpsDatasets.push({
+                    label: `Objects Deleted Trend (${trendData.objects_deleted_trend.trend_direction})`,
+                    data: chartData.map((_, index) => Math.max(0, trendData.objects_deleted_trend.slope * index + trendData.objects_deleted_trend.intercept)),
+                    borderColor: 'rgba(255, 99, 132, 0.8)',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    borderDash: [5, 5],
+                    type: 'line',
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 3
+                });
+            }
+            
+            objectOperationsChart = new Chart(objectOpsCtx, getChartConfig(chartData, 'Number of Objects', objectOpsDatasets));
+            
+            // Add trend status to chart title if available
+            if (trendAvailable) {
+                const trendCount = Object.keys(trendData).filter(key => key.includes('objects') && validateTrendData(trendData[key])).length;
+                console.log(`Object Operations Chart: ${trendCount} trend lines added`);
+            }
+        }
+
+        async function renderDataVolumeChart(chartData, trendData, trendAvailable) {
+            const dataVolumeCtx = document.getElementById('dataVolumeChart').getContext('2d');
+            if (dataVolumeChart) {
+                dataVolumeChart.destroy();
+                dataVolumeChart = null;
+            }
+            
+            const dataVolumeDatasets = [
+                { 
+                    label: 'Size Added', 
+                    key: 'size_added', 
+                    backgroundColor: 'rgba(54, 162, 235, 0.5)', 
+                    borderColor: 'rgb(54, 162, 235)', 
+                    type: 'bar' 
+                },
+                { 
+                    label: 'Size Deleted', 
+                    key: 'size_deleted', 
+                    backgroundColor: 'rgba(255, 159, 64, 0.5)', 
+                    borderColor: 'rgb(255, 159, 64)', 
+                    type: 'bar' 
+                }
+            ];
+            
+            // Add trend lines for size data with validation
+            if (trendAvailable && trendData.size_added_trend && validateTrendData(trendData.size_added_trend)) {
+                dataVolumeDatasets.push({
+                    label: `Size Added Trend (${trendData.size_added_trend.trend_direction})`,
+                    data: chartData.map((_, index) => Math.max(0, trendData.size_added_trend.slope * index + trendData.size_added_trend.intercept)),
+                    borderColor: 'rgba(54, 162, 235, 0.9)',
+                    backgroundColor: 'transparent',
+                    borderWidth: 3,
+                    borderDash: [8, 4],
+                    type: 'line',
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 4
+                });
+            }
+            
+            if (trendAvailable && trendData.size_deleted_trend && validateTrendData(trendData.size_deleted_trend)) {
+                dataVolumeDatasets.push({
+                    label: `Size Deleted Trend (${trendData.size_deleted_trend.trend_direction})`,
+                    data: chartData.map((_, index) => Math.max(0, trendData.size_deleted_trend.slope * index + trendData.size_deleted_trend.intercept)),
+                    borderColor: 'rgba(255, 159, 64, 0.9)',
+                    backgroundColor: 'transparent',
+                    borderWidth: 3,
+                    borderDash: [8, 4],
+                    type: 'line',
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 4
+                });
+            }
+            
+            dataVolumeChart = new Chart(dataVolumeCtx, getChartConfig(chartData, 'Data Size', dataVolumeDatasets));
+            dataVolumeChart.options.scales.y.ticks = { 
+                callback: function(value) { 
+                    return formatBytes(value); 
+                } 
+            };
+            dataVolumeChart.options.plugins.tooltip.callbacks = {
+                label: function(context) {
+                    let label = context.dataset.label || '';
+                    if (label) {
+                        label += ': ';
+                    }
+                    if (context.parsed.y !== null) {
+                        if (label.includes('Trend')) {
+                            label += formatBytes(context.parsed.y) + ' (projected)';
+                        } else {
+                            label += formatBytes(context.parsed.y);
+                        }
+                    }
+                    return label;
+                }
+            };
+            dataVolumeChart.update();
+            
+            // Add trend status to chart title if available
+            if (trendAvailable) {
+                const trendCount = Object.keys(trendData).filter(key => key.includes('size') && validateTrendData(trendData[key])).length;
+                console.log(`Data Volume Chart: ${trendCount} trend lines added`);
+            }
+        }
+
+        function validateTrendData(trendObj) {
+            return trendObj && 
+                   typeof trendObj.slope === 'number' && 
+                   typeof trendObj.intercept === 'number' && 
+                   !isNaN(trendObj.slope) && 
+                   !isNaN(trendObj.intercept) &&
+                   isFinite(trendObj.slope) &&
+                   isFinite(trendObj.intercept);
         }
 
         async function fetchAndRenderTopLists(baseQueryParams) {
@@ -393,6 +1363,35 @@
                 }
                 return `${item.bucket_name} <small class="text-muted">(${detail})</small>`;
             });
+            
+            // Fetch top largest objects
+            fetchTopList(`/api/dashboard/top_objects/largest?${baseQueryParams}`, topLargestObjectsListEl, item => {
+                const truncatedKey = item.object_key.length > 30 ? 
+                    item.object_key.substring(0, 27) + '...' : 
+                    item.object_key;
+                return `
+                    <div class="d-flex justify-content-between align-items-start object-item" 
+                         style="cursor: pointer; padding: 0.75rem;" 
+                         data-object-details='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
+                        <div class="me-3" style="min-width: 0; flex: 1;">
+                            <div class="fw-bold text-truncate mb-1" title="${item.object_key_full || item.object_key}">
+                                <i class="fas fa-file me-1 text-primary"></i>${truncatedKey}
+                            </div>
+                            <small class="text-muted">
+                                <i class="fas fa-bucket me-1"></i>${item.bucket_name}
+                            </small>
+                        </div>
+                        <div class="text-end">
+                            <span class="badge bg-primary fs-6 mb-2">${item.size_formatted}</span>
+                            <div>
+                                <small class="text-muted">
+                                    <i class="fas fa-mouse-pointer me-1"></i>Click to view
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
         }
 
         async function fetchTopList(url, listElement, formatter) {
@@ -406,6 +1405,11 @@
                 }
                 if (data && data.length > 0) {
                     listElement.innerHTML = data.map(item => `<li class="list-group-item">${formatter(item)}</li>`).join('');
+                    
+                    // Add click event listeners for object details modal (only for largest objects list)
+                    if (listElement.id === 'topLargestObjectsList') {
+                        addObjectClickHandlers(listElement);
+                    }
                 } else {
                     listElement.innerHTML = '<li class="list-group-item text-muted">No data available.</li>';
                 }
@@ -415,13 +1419,723 @@
             }
         }
 
-        applyFiltersBtn.addEventListener('click', fetchDataAndRender);
+        function addObjectClickHandlers(listElement) {
+            const objectItems = listElement.querySelectorAll('.object-item');
+            objectItems.forEach(item => {
+                item.addEventListener('click', function() {
+                    try {
+                        const objectData = JSON.parse(this.getAttribute('data-object-details'));
+                        showObjectDetailsModal(objectData);
+                    } catch (error) {
+                        console.error('Error parsing object data:', error);
+                    }
+                });
+            });
+        }
+
+        function showObjectDetailsModal(objectData) {
+            // Update modal title with object name
+            const objectName = objectData.object_key_full || objectData.object_key || 'Unknown Object';
+            const displayName = objectName.length > 60 ? objectName.substring(0, 57) + '...' : objectName;
+            document.getElementById('objectDetailsModalLabel').innerHTML = `
+                <i class="fas fa-file-alt me-2"></i>Object Details: ${displayName}
+            `;
+            
+            // Populate modal with object details
+            document.getElementById('modalObjectPath').textContent = objectData.object_key_full || objectData.object_key || 'Unknown';
+            document.getElementById('modalObjectSize').textContent = objectData.size_formatted || '0 B';
+            document.getElementById('modalBucketName').textContent = objectData.bucket_name || 'Unknown';
+            document.getElementById('modalEventTime').textContent = objectData.event_timestamp_formatted || 'Unknown';
+            document.getElementById('modalProcessedTime').textContent = objectData.created_at_formatted || 'Unknown';
+            document.getElementById('modalEventType').textContent = objectData.event_type || 'Unknown';
+            document.getElementById('modalRequestId').textContent = objectData.request_id || 'Unknown';
+            
+            // Size details breakdown
+            const sizeBytes = objectData.object_size || 0;
+            const sizeMB = objectData.size_mb || (sizeBytes / (1024 * 1024)).toFixed(2);
+            const sizeGB = objectData.size_gb || (sizeBytes / (1024 * 1024 * 1024)).toFixed(3);
+            
+            document.getElementById('modalObjectSizeDetails').innerHTML = `
+                <div><strong>Bytes:</strong> ${sizeBytes.toLocaleString()}</div>
+                <div><strong>MB:</strong> ${sizeMB}</div>
+                <div><strong>GB:</strong> ${sizeGB}</div>
+            `;
+            
+            // Show the modal
+            const modal = new bootstrap.Modal(document.getElementById('objectDetailsModal'));
+            modal.show();
+        }
+
+        async function fetchAndRenderTrendData(baseQueryParams) {
+            try {
+                console.log('Fetching trend data with params:', baseQueryParams);
+                const trendRes = await fetch(`/api/dashboard/trends?${baseQueryParams}&prediction_days=7`);
+                const trendData = await trendRes.json();
+
+                if (trendData.error) {
+                    console.warn("Error fetching trend data:", trendData.error);
+                    // Hide trend section gracefully instead of showing error
+                    const trendSection = document.querySelector('.row');
+                    if (trendSection) {
+                        const trendCards = trendSection.querySelectorAll('[id*="Growth"], [id*="projected"], [id*="Reliability"]');
+                        trendCards.forEach(card => {
+                            if (card.parentElement) {
+                                card.parentElement.style.opacity = '0.5';
+                                card.textContent = 'Insufficient data';
+                            }
+                        });
+                    }
+                    return;
+                }
+
+                // Update trend insights with better formatting
+                if (trendData.insights) {
+                    const insights = trendData.insights;
+                    
+                    // Safely update trend metrics
+                    const dailyGrowthEl = document.getElementById('dailyGrowthRate');
+                    const monthlyGrowthEl = document.getElementById('monthlyGrowth'); 
+                    const projected30El = document.getElementById('projectedSize30');
+                    const projected365El = document.getElementById('projectedSize365');
+                    const reliabilityEl = document.getElementById('trendReliability');
+                    
+                    if (dailyGrowthEl) {
+                        const dailyRate = insights.daily_growth_rate || 0;
+                        dailyGrowthEl.textContent = formatTrendValue(dailyRate) + '/day';
+                        dailyGrowthEl.className = `fw-bold ${dailyRate > 0 ? 'text-success' : dailyRate < 0 ? 'text-danger' : 'text-muted'}`;
+                    }
+                    
+                    if (monthlyGrowthEl) {
+                        const monthlyRate = insights.monthly_projected_growth || 0;
+                        monthlyGrowthEl.textContent = formatTrendValue(monthlyRate);
+                        monthlyGrowthEl.className = `fw-bold ${monthlyRate > 0 ? 'text-success' : monthlyRate < 0 ? 'text-danger' : 'text-muted'}`;
+                    }
+                    
+                    if (projected30El) {
+                        projected30El.textContent = formatBytes(Math.max(0, insights.projected_size_in_30_days || 0));
+                    }
+                    
+                    if (projected365El) {
+                        projected365El.textContent = formatBytes(Math.max(0, insights.projected_size_in_365_days || 0));
+                    }
+                    
+                    // Update reliability badge with enhanced styling
+                    if (reliabilityEl) {
+                        const reliability = insights.trend_reliability || 'Unknown';
+                        const rSquared = insights.trend_strength || 0;
+                        reliabilityEl.textContent = `Reliability: ${reliability} (R²: ${rSquared.toFixed(3)})`;
+                        reliabilityEl.className = `badge ${
+                            reliability === 'High' ? 'bg-success' : 
+                            reliability === 'Medium' ? 'bg-warning text-dark' : 'bg-danger'
+                        }`;
+                    }
+                    
+                    // Show trend insights section
+                    const trendSection = document.querySelector('.row');
+                    if (trendSection) {
+                        trendSection.style.opacity = '1';
+                        trendSection.style.display = 'block';
+                    }
+                }
+
+                // Render enhanced trend chart
+                await renderEnhancedTrendChart(trendData);
+                
+                console.log('Trend data rendered successfully with', 
+                    (trendData.daily_data || []).length, 'historical and', 
+                    (trendData.predictions || []).length, 'prediction points');
+
+            } catch (error) {
+                console.error("Failed to fetch trend data:", error);
+                // Show user-friendly error messages
+                showTrendDataError(error.message);
+            }
+        }
+
+        async function renderEnhancedTrendChart(trendData) {
+            const trendCtx = document.getElementById('trendChart')?.getContext('2d');
+            if (!trendCtx) {
+                console.warn('Trend chart canvas not found');
+                return;
+            }
+
+            if (trendChart) {
+                trendChart.destroy();
+                trendChart = null;
+            }
+            
+            const historicalData = trendData.daily_data || [];
+            const predictionsData = trendData.predictions || [];
+            const trendAnalysis = trendData.trend_analysis || {};
+            
+            // Validate data before rendering
+            if (historicalData.length === 0) {
+                console.warn('No historical data available for trend chart');
+                showEmptyTrendChart();
+                return;
+            }
+            
+            const config = getTrendChartConfig(historicalData, predictionsData, trendAnalysis);
+            
+            // Add animation to show trend lines are updating
+            config.options.animation = {
+                duration: 1000,
+                easing: 'easeInOutQuart'
+            };
+            
+            // Add subtitle to show data range
+            config.options.plugins.subtitle = {
+                display: true,
+                text: `Data: ${historicalData.length} days | Predictions: ${predictionsData.length} days`,
+                color: '#666',
+                font: {
+                    size: 12
+                }
+            };
+            
+            trendChart = new Chart(trendCtx, config);
+        }
+
+        function showEmptyTrendChart() {
+            const trendCtx = document.getElementById('trendChart')?.getContext('2d');
+            if (!trendCtx) return;
+            
+            if (trendChart) {
+                trendChart.destroy();
+                trendChart = null;
+            }
+            
+            // Show empty state message
+            trendChart = new Chart(trendCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Insufficient Data for Trend Analysis',
+                            color: '#999'
+                        },
+                        subtitle: {
+                            display: true,
+                            text: 'Need at least 2 days of data to show trends',
+                            color: '#666'
+                        }
+                    }
+                }
+            });
+        }
+
+        function showTrendDataError(errorMessage) {
+            const errorElements = [
+                'dailyGrowthRate',
+                'monthlyGrowth', 
+                'projectedSize30',
+                'projectedSize365'
+            ];
+            
+            errorElements.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.textContent = 'Error';
+                    el.className = 'text-danger fw-bold';
+                }
+            });
+            
+            const reliabilityEl = document.getElementById('trendReliability');
+            if (reliabilityEl) {
+                reliabilityEl.textContent = `Error: ${errorMessage}`;
+                reliabilityEl.className = 'badge bg-danger';
+            }
+        }
+
+        function formatTrendValue(value) {
+            if (value === 0) return '0 B';
+            const abs = Math.abs(value);
+            const sign = value < 0 ? '-' : '+';
+            return sign + formatBytes(abs);
+        }
+
+        // Enhanced apply button handler with better feedback
+        applyFiltersBtn.addEventListener('click', async (event) => {
+            event.preventDefault(); // Prevent any form submission
+            console.log('Apply button clicked - updating trend lines');
+            
+            // Add visual feedback
+            applyFiltersBtn.disabled = true;
+            applyFiltersBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Updating...';
+            
+            try {
+                await fetchDataAndRender();
+                
+                // Also send filter updates to backend for real-time updates
+                if (socket && socket.connected) {
+                    sendCurrentFiltersToBackend();
+                }
+                
+                // Success feedback
+                applyFiltersBtn.innerHTML = '<i class="fas fa-check me-2"></i>Applied';
+                applyFiltersBtn.className = 'btn btn-success btn-sm w-100';
+                
+                setTimeout(() => {
+                    applyFiltersBtn.innerHTML = 'Apply';
+                    applyFiltersBtn.className = 'btn btn-primary btn-sm w-100';
+                    applyFiltersBtn.disabled = false;
+                }, 2000);
+                
+            } catch (error) {
+                console.error('Error applying filters:', error);
+                applyFiltersBtn.innerHTML = '<i class="fas fa-exclamation-triangle me-2"></i>Error';
+                applyFiltersBtn.className = 'btn btn-danger btn-sm w-100';
+                
+                setTimeout(() => {
+                    applyFiltersBtn.innerHTML = 'Apply';
+                    applyFiltersBtn.className = 'btn btn-primary btn-sm w-100';
+                    applyFiltersBtn.disabled = false;
+                }, 3000);
+            }
+        });
+
+        // Send filter updates when filters change (not just on Apply click)
+        bucketFilter.addEventListener('change', (event) => {
+            event.preventDefault();
+            if (socket && socket.connected) {
+                sendCurrentFiltersToBackend();
+            }
+        });
+        
+        timeFrameFilter.addEventListener('change', (event) => {
+            event.preventDefault();
+            if (event.target.value === 'custom') {
+                customDateRangePickers.style.display = 'flex';
+            } else {
+                customDateRangePickers.style.display = 'none';
+            }
+            if (socket && socket.connected) {
+                sendCurrentFiltersToBackend();
+            }
+        });
+        
+        // Send updates when custom date range changes
+        startDateInput.addEventListener('change', (event) => {
+            event.preventDefault();
+            if (timeFrameFilter.value === 'custom' && socket && socket.connected) {
+                sendCurrentFiltersToBackend();
+            }
+        });
+        
+        endDateInput.addEventListener('change', (event) => {
+            event.preventDefault();
+            if (timeFrameFilter.value === 'custom' && socket && socket.connected) {
+                sendCurrentFiltersToBackend();
+            }
+        });
 
         // Initial load
-        // Explicitly set the time frame to last_7_days to override any browser caching
-        timeFrameFilter.value = 'last_7_days';
+        // Set the time frame to last_1_hour as default for recent data
+        timeFrameFilter.value = 'last_1_hour';
+        
+        // Add trend line toggle
+        addTrendLineToggle();
         
         fetchDataAndRender();
+        
+        // Initialize real-time updates
+        initializeWebSocket();
+
+        // Add trend line toggle button
+        function addTrendLineToggle() {
+            const filtersCard = document.querySelector('.card-body');
+            const existingToggle = document.getElementById('trendToggle');
+            
+            if (filtersCard && !existingToggle) {
+                const toggleContainer = document.createElement('div');
+                toggleContainer.className = 'row mt-2';
+                toggleContainer.innerHTML = `
+                    <div class="col-12">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="trendToggle" ${showTrendLines ? 'checked' : ''}>
+                            <label class="form-check-label fw-bold" for="trendToggle">
+                                <i class="fas fa-chart-line me-1"></i>Show Trend Lines
+                            </label>
+                        </div>
+                        <small class="text-muted">Toggle trend line overlays on charts</small>
+                    </div>
+                `;
+                
+                // Insert before the apply button
+                const applyBtnContainer = applyFiltersBtn.parentElement.parentElement;
+                if (applyBtnContainer) {
+                    applyBtnContainer.parentElement.insertBefore(toggleContainer, applyBtnContainer);
+                }
+                
+                // Add event listener for toggle
+                setTimeout(() => {
+                    const toggle = document.getElementById('trendToggle');
+                    if (toggle) {
+                        toggle.addEventListener('change', function(event) {
+                            event.preventDefault();
+                            showTrendLines = this.checked;
+                            console.log(`Trend lines ${showTrendLines ? 'enabled' : 'disabled'}`);
+                            
+                            // Show visual feedback
+                            const label = this.nextElementSibling;
+                            label.style.color = showTrendLines ? '#198754' : '#6c757d';
+                            
+                            // Re-render charts with current data but updated trend line visibility
+                            if (window.lastChartData && window.lastTrendData) {
+                                refreshChartsWithTrendToggle();
+                            }
+                        });
+                    }
+                }, 100);
+            }
+        }
+
+        async function refreshChartsWithTrendToggle() {
+            // Get current chart data without making new API calls
+            const currentObjectData = objectOperationsChart?.data;
+            const currentVolumeData = dataVolumeChart?.data;
+            
+            if (currentObjectData && currentVolumeData) {
+                console.log('Refreshing charts with trend toggle state:', showTrendLines);
+                
+                // Extract original data (non-trend datasets)
+                const objectOpsDatasets = currentObjectData.datasets.filter(d => !d.label.includes('Trend'));
+                const dataVolumeDatasets = currentVolumeData.datasets.filter(d => !d.label.includes('Trend'));
+                
+                // Re-render charts with current trend toggle state
+                if (window.lastTrendData) {
+                    await renderObjectOperationsChart(
+                        window.lastChartData || [],
+                        window.lastTrendData || {},
+                        showTrendLines && Object.keys(window.lastTrendData).length > 0
+                    );
+                    await renderDataVolumeChart(
+                        window.lastChartData || [],
+                        window.lastTrendData || {},
+                        showTrendLines && Object.keys(window.lastTrendData).length > 0
+                    );
+                }
+            }
+        }
+
+        // =========================
+        // Fancy Billing Display
+        // =========================
+        
+        let currentBillingAmount = 0;
+        let billingUpdateInterval = null;
+        
+        async function fetchBillingData() {
+            const bucketName = bucketFilter.value !== 'all' ? bucketFilter.value : null;
+            const params = new URLSearchParams();
+            if (bucketName) {
+                params.append('bucket_name', bucketName);
+            }
+            
+            try {
+                console.log('Fetching billing data from:', `/api/dashboard/billing/current?${params.toString()}`);
+                const response = await fetch(`/api/dashboard/billing/current?${params.toString()}`);
+                
+                if (!response.ok) {
+                    console.error(`Billing API returned ${response.status}: ${response.statusText}`);
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                console.log('Billing data received:', data);
+                return data;
+            } catch (error) {
+                console.error('Error fetching billing data:', error);
+                return {
+                    error: `Failed to fetch billing data: ${error.message}`,
+                    needs_configuration: true
+                };
+            }
+        }
+        
+        function updateBillingDisplay(billingData) {
+            const billingDisplay = document.getElementById('billingDisplay');
+            const billingAmount = document.getElementById('billingAmount');
+            const billingMonth = document.getElementById('billingMonth');
+            const activityCost = document.getElementById('activityCost');
+            const billingStatus = document.getElementById('billingStatus');
+            
+            if (!billingData || billingData.error || billingData.needs_configuration) {
+                // Handle error or no billing configuration with helpful messaging
+                billingAmount.innerHTML = '<span class="billing-loading">Configuration Required</span>';
+                
+                let errorMessage = 'Configure billing settings to see cost estimates';
+                if (billingData?.error) {
+                    errorMessage = billingData.error;
+                    console.log('Billing error details:', billingData);
+                }
+                
+                billingMonth.textContent = errorMessage;
+                activityCost.innerHTML = '<span class="billing-loading">Setup Required</span>';
+                billingStatus.innerHTML = '<div class="status-indicator" style="background: #f59e0b;"></div><span>Setup needed - Go to Settings → Billing</span>';
+                
+                // Use orange color for configuration needed
+                updateBillingColor(billingDisplay, 'orange');
+                return;
+            }
+            
+            // Add updating animation
+            billingDisplay.classList.add('updating');
+            setTimeout(() => billingDisplay.classList.remove('updating'), 500);
+            
+            const estimatedTotal = billingData.estimated_total || 0;
+            const baseline = billingData.baseline_amount || 0;
+            const incremental = billingData.incremental_cost || 0;
+            const daysElapsed = billingData.days_elapsed || 0;
+            const daysInMonth = billingData.days_in_month || 31;
+            
+            console.log(`Billing update: Total=$${estimatedTotal}, Baseline=$${baseline}, Activity=$${incremental}`);
+            
+            // Determine color based on total amount
+            const currentColor = getCurrentBillingColor(estimatedTotal);
+            updateBillingColor(billingDisplay, currentColor);
+            
+            // Left side: Total amount owed so far
+            animateNumberChange(billingAmount, currentBillingAmount, estimatedTotal, (value) => {
+                return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            });
+            currentBillingAmount = estimatedTotal;
+            
+            // Left side subtitle: Billing cycle day info
+            billingMonth.textContent = `Day ${daysElapsed} of ${billingData.month || 'Current Month'} billing cycle • Total owed so far`;
+            
+            // Right side: Just the growing API activity cost
+            const activityElement = document.getElementById('activityCost');
+            if (activityElement) {
+                activityElement.innerHTML = `$${incremental.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            }
+            
+            // Update status
+            const statusText = estimatedTotal > 0 ? 'Real-time monitoring active' : 'Awaiting activity data';
+            billingStatus.innerHTML = `<div class="status-indicator"></div><span>${statusText}</span>`;
+        }
+        
+        function getCurrentBillingColor(amount) {
+            if (amount < 6000) return 'green';
+            if (amount < 12000) return 'yellow';
+            if (amount < 25000) return 'orange';
+            return 'red';
+        }
+        
+        function updateBillingColor(element, newColor) {
+            const colors = ['green', 'yellow', 'orange', 'red'];
+            colors.forEach(color => element.classList.remove(color));
+            element.classList.add(newColor);
+        }
+        
+        function animateNumberChange(element, fromValue, toValue, formatter) {
+            const duration = 800;
+            const startTime = performance.now();
+            const difference = toValue - fromValue;
+            
+            function updateNumber(currentTime) {
+                const elapsed = currentTime - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                
+                // Use easing function for smooth animation
+                const easeOutQuart = 1 - Math.pow(1 - progress, 4);
+                const currentValue = fromValue + (difference * easeOutQuart);
+                
+                element.innerHTML = formatter(currentValue);
+                
+                if (progress < 1) {
+                    requestAnimationFrame(updateNumber);
+                }
+            }
+            
+            requestAnimationFrame(updateNumber);
+        }
+        
+        async function initializeBillingDisplay() {
+            console.log('Initializing billing display...');
+            
+            // Initial load
+            const billingData = await fetchBillingData();
+            updateBillingDisplay(billingData);
+            
+            // Set up periodic updates (every 30 seconds for real-time feel)
+            if (billingUpdateInterval) {
+                clearInterval(billingUpdateInterval);
+            }
+            
+            billingUpdateInterval = setInterval(async () => {
+                const updatedData = await fetchBillingData();
+                if (updatedData) {
+                    updateBillingDisplay(updatedData);
+                }
+            }, 30000); // 30 seconds
+        }
+        
+        async function updateBillingForCurrentFilters() {
+            console.log('Updating billing display for current filters...');
+            const billingData = await fetchBillingData();
+            updateBillingDisplay(billingData);
+        }
+        
+        // Initialize billing display on page load
+        initializeBillingDisplay();
+        
+        // Update billing when filters change
+        bucketFilter.addEventListener('change', updateBillingForCurrentFilters);
+        
+        // Enhanced apply button to also update billing
+        const originalApplyHandler = applyFiltersBtn.onclick;
+        applyFiltersBtn.addEventListener('click', async () => {
+            await updateBillingForCurrentFilters();
+        });
+
+        // =========================
+        // Billing Configuration Modal
+        // =========================
+        
+        // Open billing config modal when billing display is clicked
+        document.getElementById('billingDisplay').addEventListener('click', function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            loadBillingConfigurationModal();
+        });
+        
+        async function loadBillingConfigurationModal() {
+            try {
+                // Load current billing configuration
+                const response = await fetch('/api/dashboard/billing/current');
+                const data = await response.json();
+                
+                // Populate modal with current values
+                document.getElementById('baselineAmount').value = data.baseline_amount || '';
+                document.getElementById('discountPercentage').value = data.discount_percentage || 0;
+                
+                // Set billing cycle start to first of current month as default
+                const now = new Date();
+                const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                document.getElementById('billingCycleStart').value = firstOfMonth.toISOString().split('T')[0];
+                
+                // Show the modal
+                new bootstrap.Modal(document.getElementById('billingConfigModal')).show();
+            } catch (error) {
+                console.error('Error loading billing configuration:', error);
+                // Still show modal even if loading fails
+                new bootstrap.Modal(document.getElementById('billingConfigModal')).show();
+            }
+        }
+        
+        // Save billing configuration
+        document.getElementById('saveBillingConfig').addEventListener('click', async function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            
+            const baselineAmountInput = document.getElementById('baselineAmount');
+            const billingCycleStartInput = document.getElementById('billingCycleStart');
+            const discountPercentageInput = document.getElementById('discountPercentage');
+
+            const baselineAmount = parseFloat(baselineAmountInput.value);
+            const billingCycleStart = billingCycleStartInput.value;
+            // Ensure discountPercentage is 0 if empty or invalid, otherwise parse it
+            const discountPercentage = (discountPercentageInput.value.trim() === '' || isNaN(parseFloat(discountPercentageInput.value))) 
+                                       ? 0 
+                                       : parseFloat(discountPercentageInput.value);
+            
+            // Client-side validation
+            if (isNaN(baselineAmount) || baselineAmount < 0) {
+                alert('Please enter a valid non-negative number for Baseline Monthly Amount.');
+                baselineAmountInput.focus();
+                return false;
+            }
+            
+            if (!billingCycleStart) {
+                alert('Please select a Billing Cycle Start Date.');
+                billingCycleStartInput.focus();
+                return false;
+            }
+
+            if (isNaN(discountPercentage) || discountPercentage < 0 || discountPercentage > 100) {
+                 alert('Please enter a valid discount percentage between 0 and 100, or leave it empty for 0%.');
+                 discountPercentageInput.focus();
+                 return false;
+            }
+            
+            try {
+                const response = await fetch('/api/dashboard/billing/configure', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        baseline_amount: baselineAmount,
+                        billing_period_start: billingCycleStart,
+                        discount_percentage: discountPercentage 
+                    })
+                });
+                
+                if (response.ok) {
+                    // Close modal
+                    bootstrap.Modal.getInstance(document.getElementById('billingConfigModal')).hide();
+                    
+                    // Refresh billing display
+                    await updateBillingForCurrentFilters();
+                    
+                    // Show success message
+                    const billingStatus = document.getElementById('billingStatus');
+                    billingStatus.innerHTML = '<div class="status-indicator" style="background: #22c55e;"></div><span>Configuration saved successfully!</span>';
+                    
+                    setTimeout(() => {
+                        billingStatus.innerHTML = '<div class="status-indicator"></div><span>Real-time monitoring active</span>';
+                    }, 3000);
+                } else {
+                    let errorMessage = 'Failed to save billing configuration. Please try again.';
+                    try {
+                        const errorData = await response.json();
+                        if (errorData && errorData.error) {
+                            errorMessage = `Failed to save: ${errorData.error}`;
+                        } else {
+                             errorMessage = `Failed to save. Server responded with status: ${response.status} ${response.statusText}`;
+                        }
+                    } catch (e) {
+                        errorMessage = `Failed to save. Server responded with status: ${response.status} ${response.statusText}. Could not parse error details.`;
+                    }
+                    alert(errorMessage);
+                }
+            } catch (error) {
+                console.error('Error saving billing configuration:', error);
+                alert('Error saving configuration. Please check your connection and try again.');
+            }
+            
+            return false; // Keep this to ensure no further default action
+        });
+
+        // Prevent form submission on billing config form
+        document.getElementById('billingConfigForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            console.log('Form submission prevented');
+            return false;
+        });
+
+        // Add global error handler to prevent page reloads
+        window.addEventListener('error', function(event) {
+            console.error('JavaScript error caught:', event.error);
+            event.preventDefault();
+            return true;
+        });
+
+        // Add unhandled promise rejection handler
+        window.addEventListener('unhandledrejection', function(event) {
+            console.error('Unhandled promise rejection:', event.reason);
+            event.preventDefault();
+            return true;
+        });
     });
 </script>
 {% endblock %} 

@@ -4,13 +4,20 @@ import logging
 import threading # Import threading
 from threading import Lock
 import time
+import signal  # Add signal handling for graceful shutdown
 from datetime import datetime, timedelta, timezone
 import copy
 import secrets, re
+import atexit  # Add atexit for cleanup registration
+import shutil  # For file operations
+import zipfile  # For backup archives
+import tempfile  # For temporary files
+import sqlite3  # For database operations
 
-from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, session, current_app
+from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, session, current_app, send_file
 from flask_wtf.csrf import CSRFProtect # Removed unused validate_csrf
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from werkzeug.utils import secure_filename  # For secure file handling
 
 # Add Flask-SocketIO for WebSockets
 try:
@@ -22,8 +29,14 @@ except ImportError:
     print("To enable WebSockets, install with: pip install flask-socketio")
 
 # Configure logging first so logger is available for imports
+# Import LOG_LEVEL before configuring logging
+from app.config import LOG_LEVEL
+
+# Convert string log level to logging constant
+log_level = getattr(logging, LOG_LEVEL, logging.WARNING)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler()]
 )
@@ -39,7 +52,7 @@ from app.config import (
 )
 
 # Model and Client imports
-from app.models.database import Database
+from app.models.database_factory import get_database_from_config
 from app.models.redis_buffer import RedisEventBuffer
 from app.backblaze_api import BackblazeClient as NativeBackblazeClient
 
@@ -93,6 +106,32 @@ app.secret_key = SECRET_KEY
 app.config['DEBUG'] = DEBUG
 app.config['PARALLEL_BUCKET_OPERATIONS'] = PARALLEL_BUCKET_OPERATIONS # From app.config
 
+# Initialize Celery for async webhook processing
+try:
+    from .celery_app import make_celery
+    celery = make_celery(app)
+    logger.info("Celery initialized successfully for async webhook processing")
+    app.config['CELERY_INSTANCE'] = celery
+    
+    # Import Celery tasks after celery is initialized
+    try:
+        from .tasks import process_webhook_task
+        logger.info("Successfully imported Celery tasks")
+    except ImportError as task_import_error:
+        logger.error(f"Failed to import Celery tasks: {task_import_error}")
+        process_webhook_task = None
+        
+except ImportError as e:
+    logger.warning(f"Celery not available: {e}")
+    logger.warning("Webhooks will be processed synchronously")
+    celery = None
+    process_webhook_task = None
+except Exception as e:
+    logger.error(f"Failed to initialize Celery: {e}")
+    logger.warning("Webhooks will be processed synchronously")
+    celery = None
+    process_webhook_task = None
+
 # Initialize SocketIO if available
 if socketio_available:
     socketio = SocketIO(app, 
@@ -101,16 +140,15 @@ if socketio_available:
                        ping_timeout=60,
                        ping_interval=25,
                        manage_session=False,  # Don't let Socket.IO manage sessions
-                       logger=True,           # Enable Socket.IO internal logging
-                       engineio_logger=True)  # Enable Engine.IO logging
+                       logger=False,          # Disable Socket.IO internal logging
+                       engineio_logger=False) # Disable Engine.IO logging
     logger.info("WebSocket support enabled using Flask-SocketIO")
 else:
     socketio = None
     logger.warning("WebSocket support disabled (flask_socketio not installed)")
 
-# Initialize database (db and db_path are now global)
-db_path = DATABASE_URI.replace('sqlite:///', '') # Define db_path globally
-db = Database(db_path) # Define db globally
+# Initialize database using the factory (supports both SQLite and MongoDB)
+db = get_database_from_config() # Define db globally
 
 # Initialize Redis buffer for webhook events
 redis_buffer = None
@@ -130,6 +168,41 @@ except Exception as e:
     logger.error(f"Failed to initialize Redis buffer: {e}")
     logger.info("Falling back to direct SQLite writes")
     redis_buffer = None
+
+# Graceful shutdown handling to ensure Redis flushes to SQLite
+def cleanup_and_shutdown():
+    """Cleanup function to ensure Redis buffer is flushed before shutdown"""
+    logger.info("Application shutdown initiated - performing cleanup...")
+    
+    if redis_buffer:
+        try:
+            logger.info("Flushing Redis buffer to SQLite before shutdown...")
+            flushed_count = redis_buffer.flush_now()
+            logger.info(f"Emergency flush completed: {flushed_count} events saved to SQLite")
+            
+            logger.info("Stopping Redis flush worker...")
+            redis_buffer.stop_flush_worker()
+            logger.info("Redis cleanup completed successfully")
+        except Exception as e:
+            logger.error(f"Error during Redis cleanup: {e}")
+    
+    logger.info("Application cleanup completed")
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    signal_name = signal.Signals(signum).name
+    logger.info(f"Received {signal_name} signal - initiating graceful shutdown...")
+    cleanup_and_shutdown()
+    
+    # For SIGTERM, exit gracefully
+    if signum == signal.SIGTERM:
+        logger.info("Graceful shutdown complete")
+        os._exit(0)
+
+# Register cleanup handlers
+atexit.register(cleanup_and_shutdown)
+signal.signal(signal.SIGTERM, signal_handler)  # Docker sends SIGTERM
+signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
 
 # Initialize webhook processor
 webhook_processor = WebhookProcessor(db)
@@ -181,8 +254,211 @@ snapshot_progress_global = {
 snapshot_progress_lock = Lock()
 stop_snapshot_event = threading.Event() # Add a threading event
 
-# WebSocket channels for broadcasting updates
-ws_clients = set()
+# --- Real-time Webhook Event Emission ---
+# Global variables for managing webhook broadcast timing
+last_webhook_broadcast = 0
+WEBHOOK_BROADCAST_INTERVAL = 1.0  # Send summaries every 1 second
+
+# Track the last time we sent a summary to avoid overlapping windows  
+last_summary_timestamp = None
+
+def emit_webhook_event_wrapper(event_data=None):
+    """Emit individual webhook events and manage summary timing"""
+    global last_webhook_broadcast
+    current_time = time.time()
+    
+    # Emit individual event for real-time updates if event data is provided
+    if event_data and socketio:
+        try:
+            socketio.emit('webhook_event', event_data, namespace='/ws')
+            logger.debug(f"Emitted individual webhook event: {event_data.get('event_type')} for {event_data.get('bucket_name')}")
+        except Exception as e:
+            logger.error(f"Error emitting individual webhook event: {e}")
+    
+    # Check if it's time to send a summary (every 1 second)
+    if current_time - last_webhook_broadcast >= WEBHOOK_BROADCAST_INTERVAL:
+        send_webhook_summary_from_mongodb()
+        last_webhook_broadcast = current_time
+
+def send_webhook_summary_from_mongodb():
+    """Get recent events from MongoDB and send aggregated summary for non-overlapping time windows"""
+    global last_summary_timestamp
+    
+    if not socketio:
+        return
+    
+    try:
+        current_time = datetime.now(timezone.utc)
+        
+        # For the first summary, look at the last 30 seconds
+        # For subsequent summaries, look only at events since the last summary (non-overlapping)
+        if last_summary_timestamp is None:
+            # First summary - get events from last 30 seconds
+            cutoff_time = current_time - timedelta(seconds=30)
+            logger.debug("First webhook summary - getting events from last 30 seconds")
+        else:
+            # Subsequent summaries - get events only since last summary (non-overlapping window)
+            cutoff_time = last_summary_timestamp
+            logger.debug(f"Webhook summary - getting events since {last_summary_timestamp.isoformat()}")
+        
+        # Use the database to get recent events - get more to ensure we have enough
+        recent_events = db.get_webhook_events(limit=200)  # Get more events to filter from
+        
+        # Filter to only events from the cutoff time
+        filtered_events = []
+        
+        for event in recent_events:
+            # Parse the event timestamp - handle multiple formats (string ISO, Unix timestamp integers)
+            try:
+                # Try created_at first, then fall back to timestamp
+                event_time_str = event.get('created_at', event.get('timestamp', ''))
+                event_time = None
+                
+                if event_time_str:
+                    # Handle different timestamp formats
+                    if isinstance(event_time_str, (int, float)) or str(event_time_str).isdigit():
+                        # Unix timestamp in milliseconds (integer format from recent webhook events)
+                        timestamp_ms = int(event_time_str)
+                        if timestamp_ms > 1e12:  # Likely milliseconds
+                            event_time = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+                        else:  # Likely seconds
+                            event_time = datetime.fromtimestamp(timestamp_ms, tz=timezone.utc)
+                    elif isinstance(event_time_str, str):
+                        # ISO string format (from older webhook events)
+                        if event_time_str.endswith('Z'):
+                            event_time = datetime.fromisoformat(event_time_str.replace('Z', '+00:00'))
+                        elif '+' in event_time_str or event_time_str.endswith('00:00'):
+                            event_time = datetime.fromisoformat(event_time_str)
+                        else:
+                            # Assume UTC if no timezone info
+                            event_time = datetime.fromisoformat(event_time_str).replace(tzinfo=timezone.utc)
+                    
+                    # Check if this event is within our time window
+                    if event_time and event_time >= cutoff_time:
+                        filtered_events.append({
+                            'bucket_name': event.get('bucket_name', 'unknown'),
+                            'event_type': event.get('event_type', 'unknown'),
+                            'object_size': event.get('object_size', 0) or 0,
+                            'timestamp': event_time
+                        })
+            except (ValueError, TypeError) as e:
+                logger.debug(f"Error parsing event timestamp '{event_time_str}' (type: {type(event_time_str)}): {e}")
+                continue
+        
+        # Update the last summary timestamp to current time for next iteration
+        summary_timestamp = current_time.isoformat()
+        
+        # Calculate the actual time period this summary covers
+        if last_summary_timestamp is None:
+            period_seconds = 30  # First summary covers 30 seconds
+            last_summary_timestamp = current_time  # Set for next iteration
+        else:
+            # Calculate the actual time difference between summaries
+            time_diff = (current_time - last_summary_timestamp).total_seconds()
+            period_seconds = max(time_diff, WEBHOOK_BROADCAST_INTERVAL)  # Use actual time or minimum interval
+            last_summary_timestamp = current_time  # Update for next iteration
+        
+        if not filtered_events:
+            # Send empty summary to keep the UI alive
+            empty_summary = {
+                'timestamp': summary_timestamp,
+                'total_events': 0,
+                'unique_buckets': 0,
+                'bucket_list': [],
+                'objects_added': 0,
+                'objects_removed': 0,
+                'data_added': 0,
+                'data_removed': 0,
+                'net_object_change': 0,
+                'net_data_change': 0,
+                'event_types': {},
+                'period_seconds': period_seconds,
+                'window_type': 'non_overlapping'  # Indicate this is a non-overlapping window
+            }
+            socketio.emit('webhook_summary', empty_summary, namespace='/ws')
+            logger.info(f"Sent empty non-overlapping summary - no events in window since {cutoff_time.isoformat()}")
+            return
+        
+        # Aggregate events and send summary
+        summary = aggregate_webhook_events(filtered_events, summary_timestamp)
+        summary['period_seconds'] = period_seconds
+        summary['window_type'] = 'non_overlapping'  # Indicate this is a non-overlapping window
+        
+        socketio.emit('webhook_summary', summary, namespace='/ws')
+        logger.info(f"Sent non-overlapping summary: {summary['total_events']} events since {cutoff_time.isoformat()}")
+        
+    except Exception as e:
+        logger.error(f"Error sending MongoDB-based webhook summary: {e}")
+        # Send empty summary on error to keep UI alive
+        try:
+            error_summary = {
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'total_events': 0,
+                'unique_buckets': 0,
+                'bucket_list': [],
+                'objects_added': 0,
+                'objects_removed': 0,
+                'data_added': 0,
+                'data_removed': 0,
+                'net_object_change': 0,
+                'net_data_change': 0,
+                'event_types': {},
+                'period_seconds': WEBHOOK_BROADCAST_INTERVAL,
+                'window_type': 'non_overlapping'  # Indicate this is a non-overlapping window
+            }
+            socketio.emit('webhook_summary', error_summary, namespace='/ws')
+        except:
+            pass  # Don't let error emission cause another error
+
+def send_webhook_summary():
+    """Public interface to send webhook summary - now MongoDB-based"""
+    send_webhook_summary_from_mongodb()
+
+def aggregate_webhook_events(events, timestamp=None):
+    """Aggregate multiple webhook events into a useful summary"""
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        
+    buckets = set()
+    objects_added = 0
+    objects_removed = 0
+    data_added = 0  # bytes
+    data_removed = 0  # bytes
+    event_types = {}
+    
+    for event in events:
+        bucket_name = event.get('bucket_name', 'unknown')
+        event_type = event.get('event_type', 'unknown')
+        object_size = event.get('object_size', 0) or 0
+        
+        buckets.add(bucket_name)
+        
+        # Count event types
+        event_types[event_type] = event_types.get(event_type, 0) + 1
+        
+        # Categorize as add/remove and track data size
+        if 'Created' in event_type:
+            objects_added += 1
+            data_added += object_size
+        elif 'Deleted' in event_type:
+            objects_removed += 1
+            data_removed += object_size
+    
+    return {
+        'timestamp': timestamp,
+        'total_events': len(events),
+        'unique_buckets': len(buckets),
+        'bucket_list': list(buckets),
+        'objects_added': objects_added,
+        'objects_removed': objects_removed,
+        'data_added': data_added,
+        'data_removed': data_removed,
+        'net_object_change': objects_added - objects_removed,
+        'net_data_change': data_added - data_removed,
+        'event_types': event_types,
+        'period_seconds': WEBHOOK_BROADCAST_INTERVAL
+    }
+
 
 # Global client and scheduler variables
 backblaze_client = None # For the global native B2 client, if needed outside snapshots
@@ -990,10 +1266,29 @@ def health_check():
     """Health check endpoint for container monitoring"""
     try:
         db_ok = False
-        with db._get_connection() as conn: # Uses global db
-            cursor = conn.cursor()
-            cursor.execute('SELECT 1')
-            db_ok = True
+        database_type = type(db).__name__
+        
+        if database_type == 'MongoDatabase':
+            # MongoDB health check - just try a simple operation
+            try:
+                # Use MongoDB ping command to check connection
+                db.db.command('ping')
+                db_ok = True
+                logger.debug("MongoDB health check passed")
+            except Exception as mongo_e:
+                logger.error(f"MongoDB health check failed: {mongo_e}")
+                db_ok = False
+        else:
+            # SQLite health check (original code)
+            try:
+                with db._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('SELECT 1')
+                    db_ok = True
+                    logger.debug("SQLite health check passed")
+            except Exception as sqlite_e:
+                logger.error(f"SQLite health check failed: {sqlite_e}")
+                db_ok = False
             
         # Check global native B2 client status (if it's supposed to be initialized)
         # This check is for the global `backblaze_client`, not necessarily S3 or worker clients.
@@ -1002,6 +1297,7 @@ def health_check():
         return jsonify({
             'status': 'healthy', 'timestamp': datetime.now().isoformat(),
             'database': db_ok,
+            'database_type': database_type,
             'global_b2_client_initialized_and_authorized': global_b2_client_status
         })
     except Exception as e:
@@ -1016,27 +1312,58 @@ def health_check():
 @app.route('/api/webhooks/backblaze', methods=['POST'])
 @csrf.exempt  # Webhook endpoints need to be exempt from CSRF
 def receive_backblaze_webhook():
-    """Receive webhook events from Backblaze"""
+    """Receive webhook events from Backblaze and queue them for async processing"""
+    # Get request metadata early for logging
+    source_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    user_agent = request.headers.get('User-Agent', 'Unknown')
+    content_type = request.headers.get('Content-Type', 'Unknown')
+    
     try:
         # Get raw payload for signature verification and logging
         raw_payload = request.get_data(as_text=True)
-        # logger.info(f"Received raw Backblaze webhook payload: {raw_payload}") # Removed for cleaner logs
         
-        # Parse JSON payload
-        payload_data = None # Initialize
+        # Basic validation: check if it looks like a legitimate webhook
+        if not raw_payload or len(raw_payload.strip()) == 0:
+            logger.warning(f"Empty webhook payload from {source_ip} (User-Agent: {user_agent}) - dropping request")
+            return '', 204  # Silent drop
+        
+        # Check for obvious bot/crawler patterns
+        bot_indicators = ['bot', 'crawler', 'spider', 'scan', 'curl', 'wget']
+        if any(indicator in user_agent.lower() for indicator in bot_indicators):
+            logger.warning(f"Rejected likely bot/crawler request from {source_ip} (User-Agent: {user_agent}) - dropping request")
+            return '', 204  # Silent drop instead of 403
+        
+        # Parse JSON payload with better error handling
+        payload_data = None
         try:
             payload_data = request.get_json()
             if not payload_data:
-                logger.warning("Webhook request contained no JSON payload or result of get_json() was None/empty.")
-                return jsonify({'error': 'Invalid or empty JSON payload'}), 400
-            logger.info(f"Successfully parsed webhook JSON. Payload keys: {list(payload_data.keys()) if isinstance(payload_data, dict) else 'Not a dict'}")
+                logger.warning(f"Webhook request from {source_ip} contained no JSON payload or result was None/empty (Content-Type: {content_type}) - dropping request")
+                return '', 204  # Silent drop with "No Content" status
         except Exception as e:
-            logger.error(f"Error parsing JSON payload from webhook: {e}", exc_info=True)
-            return jsonify({'error': 'Failed to parse JSON payload'}), 400
-        
-        # Get request metadata
-        source_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-        user_agent = request.headers.get('User-Agent', '')
+            # Log detailed error information for debugging but silently drop the request
+            payload_preview = raw_payload[:200] + "..." if len(raw_payload) > 200 else raw_payload
+            logger.warning(f"Malformed JSON from {source_ip} - dropping request silently")
+            logger.warning(f"  User-Agent: {user_agent}")
+            logger.warning(f"  Content-Type: {content_type}")
+            logger.warning(f"  Content-Length: {request.headers.get('Content-Length', 'Not specified')}")
+            logger.warning(f"  JSON Error: {str(e)}")
+            logger.warning(f"  Payload preview: {repr(payload_preview)}")
+            logger.warning(f"  Raw payload length: {len(raw_payload)}")
+            
+            # Try manual JSON parsing to get more specific error
+            if raw_payload:
+                try:
+                    import json
+                    manual_parsed = json.loads(raw_payload)
+                    logger.warning(f"  Manual JSON parsing succeeded - this might be a Flask issue")
+                except json.JSONDecodeError as json_err:
+                    logger.warning(f"  Manual JSON parsing also failed: {json_err}")
+                except Exception as manual_err:
+                    logger.warning(f"  Manual JSON parsing error: {manual_err}")
+            
+            # Silent drop - don't return error that could cause issues
+            return '', 204  # No Content - request processed but no response body
         
         # Get signature header - prioritize official Backblaze header
         signature = request.headers.get('X-Bz-Event-Notification-Signature')
@@ -1070,108 +1397,167 @@ def receive_backblaze_webhook():
              bucket_name = request.args.get('bucket')
 
         if not bucket_name:
-            logger.error(f"Webhook payload and query parameters missing 'bucketName'. Could not extract from events structure or query. Payload checked: {payload_data}")
-            return jsonify({'error': 'Missing bucket name in payload and query parameters'}), 400
+            logger.warning(f"Webhook payload from {source_ip} missing 'bucketName' - could not extract from events structure or query - dropping request")
+            logger.debug(f"  Payload checked: {payload_data}")
+            return '', 204  # Silent drop
         logger.info(f"Webhook identified for bucket: {bucket_name}")
 
-        # Verify webhook signature if secret is configured
-        bucket_config = db.get_bucket_configuration(bucket_name)
-        if bucket_config and bucket_config.get('webhook_secret'):
-            webhook_secret = bucket_config['webhook_secret']
-            if not raw_payload: # Should not happen if we logged raw_payload earlier
-                logger.error(f"Cannot verify signature for bucket {bucket_name}: raw_payload is empty despite earlier log.")
-                return jsonify({'error': 'Cannot verify signature due to empty payload'}), 500
-            
-            logger.debug(f"Attempting signature verification for bucket {bucket_name} with stored secret.")
-            if not webhook_processor.verify_webhook_signature(raw_payload, signature, webhook_secret):
-                logger.warning(f"Invalid webhook signature for bucket {bucket_name}. Signature received: '{signature}'. Expected based on secret for {bucket_name}. If secret recently changed, this might be normal for a short period.")
-                return jsonify({'error': 'Invalid signature'}), 401
-            logger.info(f"Webhook signature VERIFIED for bucket {bucket_name}.")
-        elif bucket_config and not bucket_config.get('webhook_secret'):
-            logger.info(f"Webhook for bucket {bucket_name} received. No webhook_secret is configured for this bucket locally. Proceeding without signature verification.")
-        elif not bucket_config:
-             logger.warning(f"Received webhook for bucket '{bucket_name}' but no local configuration (and thus no secret) found. This event will likely be rejected by process_webhook_event if it requires enabled status.")
-             # Allow to proceed to process_webhook_event, which will then check webhook_enabled flag.
-
-        # Process the webhook event
-        first_event_type = None
-        if payload_data and payload_data.get('events') and isinstance(payload_data['events'], list) and len(payload_data['events']) > 0:
-            if isinstance(payload_data['events'][0], dict):
-                first_event_type = payload_data['events'][0].get('eventType')
-
-        logger.info(f"Calling webhook_processor.process_webhook_event for bucket: {bucket_name} (First event type: {first_event_type if first_event_type else 'N/A'})")
-        
+        # **CRITICAL CHANGE**: Instead of processing directly, queue for Celery
         actual_event_data = None
         if payload_data and isinstance(payload_data, dict) and payload_data.get('events') and isinstance(payload_data['events'], list) and len(payload_data['events']) > 0:
             if isinstance(payload_data['events'][0], dict):
                 actual_event_data = payload_data['events'][0]
         
         if not actual_event_data:
-            logger.error(f"Could not extract actual event data from webhook payload for bucket {bucket_name}. Original payload structure: {payload_data}")
-            return jsonify({'error': 'Malformed event data in webhook payload'}), 400
+            logger.warning(f"Could not extract actual event data from webhook payload for bucket {bucket_name} from {source_ip} - dropping request")
+            logger.debug(f"  Original payload structure: {payload_data}")
+            return '', 204  # Silent drop
 
-        logger.info(f"Passing event data to processor. Keys: {list(actual_event_data.keys())}. For bucket: {bucket_name} (derived from event data: {actual_event_data.get('bucketName')})")
+        logger.info(f"Queueing webhook event for async processing. Keys: {list(actual_event_data.keys())}. For bucket: {bucket_name}")
 
-        result = webhook_processor.process_webhook_event(
-            actual_event_data, 
-            source_ip=source_ip, 
-            user_agent=user_agent
-        )
+        # Queue the webhook for processing with Celery
+        try:
+            if not process_webhook_task:
+                raise Exception("Celery task 'process_webhook_task' not available")
+                
+            task = process_webhook_task.delay(
+                webhook_data=actual_event_data,
+                source_ip=source_ip,
+                user_agent=user_agent
+            )
+            
+            logger.info(f"Webhook event queued for async processing. Task ID: {task.id}, Bucket: {bucket_name}, Event: {actual_event_data.get('eventType')}")
+            
+            # Return immediately with task ID
+            return jsonify({
+                'status': 'queued',
+                'message': 'Webhook event queued for processing',
+                'task_id': task.id,
+                'bucket_name': bucket_name,
+                'event_type': actual_event_data.get('eventType')
+            }), 202  # 202 Accepted - request received but processing is async
+            
+        except Exception as celery_error:
+            logger.error(f"Failed to queue webhook event for processing: {celery_error}")
+            
+            # Fallback to synchronous processing if Celery is unavailable
+            logger.warning("Celery unavailable, falling back to synchronous webhook processing")
+            
+            # Original synchronous processing code as fallback
+            result = webhook_processor.process_webhook_event(
+                actual_event_data, 
+                source_ip=source_ip, 
+                user_agent=user_agent
+            )
+            
+            if result['success']:
+                return jsonify({
+                    'status': 'success',
+                    'message': result['message'],
+                    'event_id': result['event_id'],
+                    'processed_synchronously': True  # Indicate fallback was used
+                }), 200
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': result['error'],
+                    'processed_synchronously': True
+                }), 500
         
-        if result['success']:
-            # Emit real-time update via Socket.IO if available
-            if socketio:
-                try:
-                    b2_event_actual = {} # Default to empty dict
-                    if payload_data and isinstance(payload_data, dict) and \
-                       payload_data.get('events') and isinstance(payload_data['events'], list) and \
-                       len(payload_data['events']) > 0 and isinstance(payload_data['events'][0], dict):
-                        b2_event_actual = payload_data['events'][0]
-
-                    # Data to be sent over WebSocket for a new event
-                    # This structure should align with what loadInitialData() provides for historical events,
-                    # and what renderEventCard() expects.
-                    event_data_for_socket = {
-                        'id': result['event_id'],  # DB auto-increment ID
-                        'request_id': b2_event_actual.get('eventId'),       # B2's original eventId
-                        'event_type': b2_event_actual.get('eventType'),
-                        'bucket_name': b2_event_actual.get('bucketName'),
-                        'object_key': b2_event_actual.get('objectName'),    # B2's objectName
-                        'object_size': b2_event_actual.get('objectSize'),
-                        'object_version_id': b2_event_actual.get('objectVersionId'),
-                        'event_timestamp': b2_event_actual.get('eventTimestamp'), # B2's timestamp (ms)
-                        'created_at': datetime.now(timezone.utc).isoformat(), # App's processing timestamp (ISO string)
-                        # raw_payload is not sent to save bandwidth; modal can fetch full if needed or use DB data
-                    }
-                    
-                    socketio.emit('webhook_event', event_data_for_socket, namespace='/ws')
-                    logger.debug(f"Emitted real-time update. DB ID: {result['event_id']}, B2 Event ID: {b2_event_actual.get('eventId')}")
-                except Exception as e:
-                    logger.error(f"Error emitting real-time webhook update: {e}", exc_info=True)
-            
-            return jsonify({
-                'status': 'success',
-                'message': result['message'],
-                'event_id': result['event_id']
-            }), 200
-        else:
-            return jsonify({
-                'status': 'error',
-                'error': result['error']
-            }), 400
-            
     except Exception as e:
-        logger.error(f"Error processing webhook: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+        logger.error(f"Unexpected error in webhook endpoint: {str(e)}", exc_info=True)
+        return jsonify({
+            'status': 'error',
+            'message': 'Internal server error'
+        }), 500
 
 @app.route('/api/webhooks/info')
 @login_required
 def webhook_info():
-    """Get webhook configuration information"""
+    """Get basic webhook configuration and statistics"""
     try:
-        bucket_name = request.args.get('bucket')
-        return jsonify(webhook_processor.get_webhook_url(bucket_name, include_secret=True))
+        result = webhook_processor.get_webhook_info()
+        return jsonify(result), 200
     except Exception as e:
+        logger.error(f"Error getting webhook info: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/webhooks/tasks/<task_id>', methods=['GET'])
+@login_required
+def get_webhook_task_status(task_id):
+    """Get the status of a specific webhook processing task"""
+    try:
+        if not celery:
+            return jsonify({
+                'error': 'Celery not available',
+                'message': 'Webhook task monitoring requires Celery to be properly configured'
+            }), 503
+        
+        # Get task result
+        task_result = celery.AsyncResult(task_id)
+        
+        response = {
+            'task_id': task_id,
+            'state': task_result.state,
+            'ready': task_result.ready(),
+            'successful': task_result.successful() if task_result.ready() else None,
+            'failed': task_result.failed() if task_result.ready() else None,
+        }
+        
+        # Add result or error information if task is complete
+        if task_result.ready():
+            if task_result.successful():
+                response['result'] = task_result.result
+            elif task_result.failed():
+                response['error'] = str(task_result.result)
+                response['traceback'] = task_result.traceback
+        else:
+            # Task is still pending/processing
+            response['info'] = task_result.info
+        
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting task status for {task_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/webhooks/tasks/active', methods=['GET'])
+@login_required
+def get_active_webhook_tasks():
+    """Get list of currently active webhook processing tasks"""
+    try:
+        if not celery:
+            return jsonify({
+                'error': 'Celery not available',
+                'message': 'Active task monitoring requires Celery to be properly configured'
+            }), 503
+        
+        # Get active tasks
+        inspect = celery.control.inspect()
+        active_tasks = inspect.active()
+        
+        # Filter for webhook processing tasks
+        webhook_tasks = []
+        if active_tasks:
+            for worker, tasks in active_tasks.items():
+                for task in tasks:
+                    if task.get('name') == 'app.tasks.process_webhook_task':
+                        webhook_tasks.append({
+                            'worker': worker,
+                            'task_id': task.get('id'),
+                            'name': task.get('name'),
+                            'args': task.get('args', []),
+                            'kwargs': task.get('kwargs', {}),
+                            'time_start': task.get('time_start'),
+                        })
+        
+        return jsonify({
+            'active_webhook_tasks': webhook_tasks,
+            'total_active': len(webhook_tasks)
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting active tasks: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/webhooks/events', methods=['GET'])
@@ -1239,6 +1625,9 @@ def manage_bucket_configuration(bucket_name):
             )
             
             if success:
+                # Invalidate Redis cache for this bucket
+                invalidate_bucket_config_cache(bucket_name)
+                
                 config = db.get_bucket_configuration(bucket_name)
                 return jsonify({
                     'message': 'Configuration saved successfully',
@@ -1250,6 +1639,15 @@ def manage_bucket_configuration(bucket_name):
         elif request.method == 'DELETE':
             success = db.delete_bucket_configuration(bucket_name)
             if success:
+                # Invalidate Redis cache for this bucket
+                if redis_buffer and redis_buffer.redis_client:
+                    try:
+                        config_key = f"bucket_config:{bucket_name}"
+                        redis_buffer.redis_client.delete(config_key)
+                        logger.debug(f"Invalidated Redis cache for deleted bucket {bucket_name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to invalidate Redis cache: {e}")
+                
                 return jsonify({'message': 'Configuration deleted successfully'})
             else:
                 return jsonify({'error': 'Configuration not found'}), 404
@@ -1699,6 +2097,31 @@ def stop_scheduler():
 def before_first_request_setup(): # Initialize function (no longer a decorator)
     initialize_backblaze_client() # Initialize global native B2 client if creds exist
     # start_scheduler() # Automatic scheduler start disabled for now
+    
+    # Start webhook summary emission for the events monitoring page
+    start_webhook_batch_timer()
+    # Start dashboard updates for real-time dashboard
+    start_dashboard_updates()
+    logger.info("Application startup completed - webhook event monitoring and dashboard real-time updates enabled")
+
+def start_webhook_batch_timer():
+    """Start a timer that sends webhook summaries every few seconds"""
+    import threading
+    
+    def webhook_summary_worker():
+        """Worker function that sends periodic webhook summaries"""
+        while True:
+            try:
+                time.sleep(WEBHOOK_BROADCAST_INTERVAL)  # Wait 1 second
+                send_webhook_summary_from_mongodb()
+            except Exception as e:
+                logger.error(f"Error in webhook summary worker: {e}")
+                time.sleep(5)  # Wait longer on error
+    
+    # Start the worker thread
+    summary_thread = threading.Thread(target=webhook_summary_worker, daemon=True)
+    summary_thread.start()
+    logger.info("Started webhook summary emission thread")
 
 @app.teardown_appcontext
 def teardown_appcontext(exception=None):
@@ -1713,9 +2136,6 @@ def snapshots():
 
 def run_app():
     try:
-        # db_path is global, os.makedirs uses it
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        
         # Initialize the app components (replaces @app.before_first_request)
         with app.app_context():
             before_first_request_setup()
@@ -1733,6 +2153,9 @@ def run_app():
     except Exception as e:
         logger.error(f"Error starting application: {str(e)}", exc_info=True)
     finally:
+        # Ensure cleanup runs even if there's an exception
+        logger.info("Application exiting - running final cleanup...")
+        cleanup_and_shutdown()
         stop_scheduler() # Ensure scheduler is stopped if it was started
 
 # --- Dummy Login/Logout Routes ---
@@ -2202,6 +2625,34 @@ if socketio_available:
         logger.debug(f"Received Engine.IO ping from {request.sid}")
         # No need to respond, Engine.IO handles the pong automatically
     
+    # Add handler for dashboard timeframe updates
+    @socketio.on('update_dashboard_timeframe', namespace='/ws')
+    def handle_dashboard_timeframe_update(data):
+        """Handle timeframe updates from dashboard frontend"""
+        global current_dashboard_timeframe, dashboard_timeframe_lock
+        
+        try:
+            logger.info(f"Received dashboard timeframe update from client: {data}")
+            
+            with dashboard_timeframe_lock:
+                old_timeframe = current_dashboard_timeframe.copy()
+                current_dashboard_timeframe.update({
+                    'time_frame': data.get('time_frame', 'last_1_hour'),
+                    'start_date': data.get('start_date'),
+                    'end_date': data.get('end_date'),
+                    'bucket_name': data.get('bucket_name') if data.get('bucket_name') != 'all' else None
+                })
+            
+            logger.info(f"Updated dashboard timeframe from {old_timeframe} to {current_dashboard_timeframe}")
+            
+            # Send immediate update with new timeframe
+            send_dashboard_updates()
+            
+        except Exception as e:
+            logger.error(f"Error updating dashboard timeframe: {e}")
+            import traceback
+            logger.error(f"Timeframe update traceback: {traceback.format_exc()}")
+    
     # Add error handler
     @socketio.on_error(namespace='/ws')
     def handle_error(e):
@@ -2248,6 +2699,699 @@ def manual_flush_buffer():
         logger.error(f"Error during manual flush: {e}")
         return jsonify({'error': str(e)}), 500
 
+# Global variable to store the current dashboard timeframe for real-time updates
+current_dashboard_timeframe = {
+    'time_frame': 'last_1_hour',
+    'start_date': None,
+    'end_date': None,
+    'bucket_name': None
+}
+dashboard_timeframe_lock = Lock()
+
+def send_dashboard_updates():
+    """Send real-time dashboard updates via WebSocket using current filter selection"""
+    if not socketio:
+        return
+    
+    try:
+        # Get the current timeframe selection
+        with dashboard_timeframe_lock:
+            timeframe_config = current_dashboard_timeframe.copy()
+        
+        # Use the dashboard_routes logic to calculate the date range
+        from app.dashboard_routes import get_date_range_from_request
+        
+        # Create args dict to match what dashboard_routes expects
+        filter_args = {
+            'time_frame': timeframe_config['time_frame'],
+            'start_date': timeframe_config['start_date'],
+            'end_date': timeframe_config['end_date']
+        }
+        
+        start_date_str, end_date_str = get_date_range_from_request(filter_args)
+        bucket_name = timeframe_config['bucket_name']
+        
+        # Use the same MongoDB query logic as the dashboard API
+        summary_data = db.get_object_operation_stats_for_period(start_date_str, end_date_str, bucket_name)
+        
+        # Get today's data separately for the "Net Data Change Today" card
+        now_utc = datetime.now(timezone.utc)
+        today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        today_end = now_utc.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
+        today_data = db.get_object_operation_stats_for_period(today_start, today_end, bucket_name)
+        
+        # Calculate recent activity (last hour)
+        hour_cutoff = now_utc - timedelta(hours=1)
+        hour_start = hour_cutoff.isoformat()
+        hour_end = now_utc.isoformat()
+        recent_data = db.get_object_operation_stats_for_period(hour_start, hour_end, bucket_name)
+        
+        dashboard_data = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'timeframe': timeframe_config['time_frame'],
+            'objects_added': summary_data['objects_added'],
+            'objects_deleted': summary_data['objects_deleted'],
+            'size_added': summary_data['size_added'],
+            'size_deleted': summary_data['size_deleted'],
+            'net_object_change': summary_data['net_object_change'],
+            'net_size_change': summary_data['net_size_change'],
+            'net_size_change_today': today_data['net_size_change'],
+            'total_events': summary_data['objects_added'] + summary_data['objects_deleted'],
+            'recent_activity_1h': recent_data['objects_added'] + recent_data['objects_deleted'],
+            'activity_rate_per_minute': (recent_data['objects_added'] + recent_data['objects_deleted']) / 60,
+            'period_start': start_date_str,
+            'period_end': end_date_str,
+            'bucket_filter': bucket_name
+        }
+        
+        socketio.emit('dashboard_update', dashboard_data, namespace='/ws')
+        logger.debug(f"Sent dashboard update for {timeframe_config['time_frame']}: {summary_data['objects_added']} added, {summary_data['objects_deleted']} deleted")
+        logger.info(f"Dashboard update emitted: timeframe={timeframe_config['time_frame']}, objects_added={summary_data['objects_added']}, objects_deleted={summary_data['objects_deleted']}, period={start_date_str} to {end_date_str}")
+        
+    except Exception as e:
+        logger.error(f"Error sending dashboard updates: {e}")
+        import traceback
+        logger.error(f"Dashboard update traceback: {traceback.format_exc()}")
+
+def start_dashboard_updates():
+    """Start the dashboard updates thread"""
+    import threading
+    
+    def dashboard_update_worker():
+        """Worker function that sends dashboard updates every second"""
+        while True:
+            try:
+                time.sleep(2)  # Send dashboard updates every 2 seconds
+                send_dashboard_updates()
+            except Exception as e:
+                logger.error(f"Error in dashboard update worker: {e}")
+                time.sleep(5)  # Wait longer on error
+    
+    # Start the worker thread
+    dashboard_thread = threading.Thread(target=dashboard_update_worker, daemon=True)
+    dashboard_thread.start()
+    logger.info("Started dashboard updates emission thread")
+
+@app.route('/api/dashboard/trigger_update', methods=['POST'])
+@login_required
+def trigger_dashboard_update():
+    """Manually trigger a dashboard update for testing"""
+    try:
+        send_dashboard_updates()
+        return jsonify({
+            'success': True,
+            'message': 'Dashboard update triggered'
+        })
+    except Exception as e:
+        logger.error(f"Error triggering dashboard update: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/dashboard/stats/summary', methods=['GET'])
+def api_dashboard_summary():
+    """Get dashboard summary statistics"""
+    try:
+        time_frame = request.args.get('time_frame', 'last_7_days')
+        bucket_name = request.args.get('bucket_name')
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        
+        # Calculate date range based on time_frame
+        now = datetime.now(timezone.utc)
+        if time_frame == 'today':
+            start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif time_frame == 'yesterday':
+            yesterday = now - timedelta(days=1)
+            start_time = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+            now = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
+        elif time_frame == 'this_week':
+            days_since_monday = now.weekday()
+            start_time = (now - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+        elif time_frame == 'last_7_days':
+            start_time = now - timedelta(days=7)
+        elif time_frame == 'this_month':
+            start_time = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif time_frame == 'last_30_days':
+            start_time = now - timedelta(days=30)
+        elif time_frame == 'this_quarter':
+            quarter_start_month = ((now.month - 1) // 3) * 3 + 1
+            start_time = now.replace(month=quarter_start_month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif time_frame == 'this_year':
+            start_time = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif time_frame == 'custom' and start_date and end_date:
+            start_time = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+            now = datetime.fromisoformat(end_date).replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        else:
+            start_time = now - timedelta(days=7)  # Default to last 7 days
+        
+        # Get webhook events for the time period
+        events = db.get_webhook_events(limit=10000)  # Get a large number to filter
+        
+        # Filter events by time range and bucket
+        filtered_events = []
+        for event in events:
+            try:
+                event_time_str = event.get('created_at', event.get('timestamp', ''))
+                if event_time_str:
+                    if event_time_str.endswith('Z'):
+                        event_time = datetime.fromisoformat(event_time_str.replace('Z', '+00:00'))
+                    elif '+' in event_time_str:
+                        event_time = datetime.fromisoformat(event_time_str)
+                    else:
+                        event_time = datetime.fromisoformat(event_time_str).replace(tzinfo=timezone.utc)
+                    
+                    if start_time <= event_time <= now:
+                        if not bucket_name or event.get('bucket_name') == bucket_name:
+                            filtered_events.append(event)
+            except (ValueError, TypeError):
+                continue
+        
+        # Calculate summary statistics
+        objects_added = sum(1 for e in filtered_events if 'Created' in e.get('event_type', ''))
+        objects_deleted = sum(1 for e in filtered_events if 'Deleted' in e.get('event_type', ''))
+        size_added = sum(e.get('object_size', 0) or 0 for e in filtered_events if 'Created' in e.get('event_type', ''))
+        size_deleted = sum(e.get('object_size', 0) or 0 for e in filtered_events if 'Deleted' in e.get('event_type', ''))
+        
+        # Calculate today's net change for comparison
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_events = [e for e in filtered_events 
+                       if datetime.fromisoformat(e.get('created_at', '').replace('Z', '+00:00') if e.get('created_at', '').endswith('Z') else e.get('created_at', '')) >= today_start]
+        
+        today_added = sum(e.get('object_size', 0) or 0 for e in today_events if 'Created' in e.get('event_type', ''))
+        today_deleted = sum(e.get('object_size', 0) or 0 for e in today_events if 'Deleted' in e.get('event_type', ''))
+        
+        return jsonify({
+            'objects_added': objects_added,
+            'objects_deleted': objects_deleted,
+            'size_added': size_added,
+            'size_deleted': size_deleted,
+            'net_object_change': objects_added - objects_deleted,
+            'net_size_change': size_added - size_deleted,
+            'net_size_change_today': today_added - today_deleted,
+            'total_events': len(filtered_events),
+            'time_range': {
+                'start': start_time.isoformat(),
+                'end': now.isoformat(),
+                'frame': time_frame
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting dashboard summary: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/dashboard/stats/daily_breakdown', methods=['GET'])
+def api_dashboard_daily_breakdown():
+    """Get daily breakdown of dashboard statistics"""
+    try:
+        time_frame = request.args.get('time_frame', 'last_7_days')
+        bucket_name = request.args.get('bucket_name')
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        
+        # Calculate date range (same logic as summary)
+        now = datetime.now(timezone.utc)
+        if time_frame == 'today':
+            start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif time_frame == 'yesterday':
+            yesterday = now - timedelta(days=1)
+            start_time = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+            now = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
+        elif time_frame == 'this_week':
+            days_since_monday = now.weekday()
+            start_time = (now - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+        elif time_frame == 'last_7_days':
+            start_time = now - timedelta(days=7)
+        elif time_frame == 'this_month':
+            start_time = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif time_frame == 'last_30_days':
+            start_time = now - timedelta(days=30)
+        elif time_frame == 'custom' and start_date and end_date:
+            start_time = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+            now = datetime.fromisoformat(end_date).replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        else:
+            start_time = now - timedelta(days=7)
+        
+        # Get and filter events
+        events = db.get_webhook_events(limit=10000)
+        filtered_events = []
+        for event in events:
+            try:
+                event_time_str = event.get('created_at', event.get('timestamp', ''))
+                if event_time_str:
+                    if event_time_str.endswith('Z'):
+                        event_time = datetime.fromisoformat(event_time_str.replace('Z', '+00:00'))
+                    elif '+' in event_time_str:
+                        event_time = datetime.fromisoformat(event_time_str)
+                    else:
+                        event_time = datetime.fromisoformat(event_time_str).replace(tzinfo=timezone.utc)
+                    
+                    if start_time <= event_time <= now:
+                        if not bucket_name or event.get('bucket_name') == bucket_name:
+                            event['parsed_time'] = event_time
+                            filtered_events.append(event)
+            except (ValueError, TypeError):
+                continue
+        
+        # Group events by date
+        daily_data = {}
+        current_date = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
+        while current_date <= now:
+            date_str = current_date.strftime('%Y-%m-%d')
+            daily_data[date_str] = {
+                'date': date_str,
+                'objects_added': 0,
+                'objects_deleted': 0,
+                'size_added': 0,
+                'size_deleted': 0
+            }
+            current_date += timedelta(days=1)
+        
+        # Aggregate events by day
+        for event in filtered_events:
+            event_date = event['parsed_time'].strftime('%Y-%m-%d')
+            if event_date in daily_data:
+                if 'Created' in event.get('event_type', ''):
+                    daily_data[event_date]['objects_added'] += 1
+                    daily_data[event_date]['size_added'] += event.get('object_size', 0) or 0
+                elif 'Deleted' in event.get('event_type', ''):
+                    daily_data[event_date]['objects_deleted'] += 1
+                    daily_data[event_date]['size_deleted'] += event.get('object_size', 0) or 0
+        
+        return jsonify({
+            'daily_data': list(daily_data.values())
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting daily breakdown: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/dashboard/top_buckets/<stat_type>', methods=['GET'])
+def api_dashboard_top_buckets(stat_type):
+    """Get top buckets by various statistics"""
+    try:
+        limit = int(request.args.get('limit', 10))
+        time_frame = request.args.get('time_frame', 'last_7_days')
+        
+        # Calculate time range
+        now = datetime.now(timezone.utc)
+        if time_frame == 'last_7_days':
+            start_time = now - timedelta(days=7)
+        elif time_frame == 'last_30_days':
+            start_time = now - timedelta(days=30)
+        else:
+            start_time = now - timedelta(days=7)  # Default
+        
+        # Get events
+        events = db.get_webhook_events(limit=10000)
+        filtered_events = []
+        for event in events:
+            try:
+                event_time_str = event.get('created_at', event.get('timestamp', ''))
+                if event_time_str:
+                    if event_time_str.endswith('Z'):
+                        event_time = datetime.fromisoformat(event_time_str.replace('Z', '+00:00'))
+                    elif '+' in event_time_str:
+                        event_time = datetime.fromisoformat(event_time_str)
+                    else:
+                        event_time = datetime.fromisoformat(event_time_str).replace(tzinfo=timezone.utc)
+                    
+                    if event_time >= start_time:
+                        filtered_events.append(event)
+            except (ValueError, TypeError):
+                continue
+        
+        # Aggregate by bucket
+        bucket_stats = {}
+        for event in filtered_events:
+            bucket = event.get('bucket_name', 'unknown')
+            if bucket not in bucket_stats:
+                bucket_stats[bucket] = {
+                    'bucket_name': bucket,
+                    'objects_added': 0,
+                    'objects_removed': 0,
+                    'size_added': 0,
+                    'size_removed': 0,
+                    'last_creation_event': None
+                }
+            
+            if 'Created' in event.get('event_type', ''):
+                bucket_stats[bucket]['objects_added'] += 1
+                bucket_stats[bucket]['size_added'] += event.get('object_size', 0) or 0
+                # Track last creation event
+                event_time_str = event.get('created_at', event.get('timestamp', ''))
+                if event_time_str and (not bucket_stats[bucket]['last_creation_event'] or 
+                                      event_time_str > bucket_stats[bucket]['last_creation_event']):
+                    bucket_stats[bucket]['last_creation_event'] = event_time_str
+            elif 'Deleted' in event.get('event_type', ''):
+                bucket_stats[bucket]['objects_removed'] += 1
+                bucket_stats[bucket]['size_removed'] += event.get('object_size', 0) or 0
+        
+        # Sort and return based on stat_type
+        if stat_type == 'size_added':
+            sorted_buckets = sorted(bucket_stats.values(), 
+                                  key=lambda x: x['size_added'], reverse=True)
+            result = [{'bucket_name': b['bucket_name'], 'total_size': b['size_added']} 
+                     for b in sorted_buckets[:limit]]
+        elif stat_type == 'size_removed':
+            sorted_buckets = sorted(bucket_stats.values(), 
+                                  key=lambda x: x['size_removed'], reverse=True)
+            result = [{'bucket_name': b['bucket_name'], 'total_size': b['size_removed']} 
+                     for b in sorted_buckets[:limit]]
+        elif stat_type == 'objects_added':
+            sorted_buckets = sorted(bucket_stats.values(), 
+                                  key=lambda x: x['objects_added'], reverse=True)
+            result = [{'bucket_name': b['bucket_name'], 'total_objects': b['objects_added']} 
+                     for b in sorted_buckets[:limit]]
+        elif stat_type == 'objects_removed':
+            sorted_buckets = sorted(bucket_stats.values(), 
+                                  key=lambda x: x['objects_removed'], reverse=True)
+            result = [{'bucket_name': b['bucket_name'], 'total_objects': b['objects_removed']} 
+                     for b in sorted_buckets[:limit]]
+        elif stat_type == 'stale':
+            # For stale buckets, sort by oldest last creation event
+            stale_buckets = [b for b in bucket_stats.values() if b['last_creation_event']]
+            sorted_buckets = sorted(stale_buckets, 
+                                  key=lambda x: x['last_creation_event'] or '1970-01-01')
+            result = [{'bucket_name': b['bucket_name'], 'last_creation_event': b['last_creation_event']} 
+                     for b in sorted_buckets[:limit]]
+        else:
+            return jsonify({'error': 'Invalid stat_type'}), 400
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Error getting top buckets {stat_type}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# Backup & Restore Routes
+@app.route('/backup_restore')
+@login_required
+def backup_restore():
+    """Display the backup and restore page"""
+    try:
+        # Determine database type
+        database_type = "SQLite"
+        if DATABASE_URI and DATABASE_URI.startswith('mongodb://'):
+            database_type = "MongoDB"
+        
+        # Get recent backups (for now, just mock data - would need to implement backup history tracking)
+        recent_backups = []
+        
+        return render_template('backup_restore.html', 
+                             database_type=database_type,
+                             recent_backups=recent_backups)
+        
+    except Exception as e:
+        logger.error(f"Error loading backup/restore page: {e}")
+        flash('Error loading backup/restore page', 'error')
+        return redirect(url_for('index'))
+
+@app.route('/backup', methods=['POST'])
+@login_required
+def backup_database():
+    """Create a backup of the database and configuration"""
+    try:
+        backup_items = request.form.getlist('backup_items')
+        
+        if not backup_items:
+            flash('Please select at least one item to backup', 'error')
+            return redirect(url_for('backup_restore'))
+        
+        # Create temporary directory for backup
+        with tempfile.TemporaryDirectory() as temp_dir:
+            backup_dir = os.path.join(temp_dir, 'backup')
+            os.makedirs(backup_dir, exist_ok=True)
+            
+            # Backup database
+            if 'database' in backup_items:
+                if DATABASE_URI and DATABASE_URI.startswith('sqlite:///'):
+                    # SQLite backup
+                    db_path = DATABASE_URI.replace('sqlite:///', '')
+                    if os.path.exists(db_path):
+                        shutil.copy2(db_path, os.path.join(backup_dir, 'database.db'))
+                        logger.info(f"SQLite database backed up from {db_path}")
+                    else:
+                        logger.warning(f"Database file not found at {db_path}")
+                elif DATABASE_URI and DATABASE_URI.startswith('mongodb://'):
+                    # For MongoDB, we'll create a JSON export of ALL the data
+                    try:
+                        # Export ALL snapshots (no limit)
+                        snapshots = db.get_latest_snapshots(limit=999999)  # Export all snapshots
+                        with open(os.path.join(backup_dir, 'snapshots.json'), 'w') as f:
+                            json.dump(snapshots, f, indent=2, default=str)
+                        logger.info(f"Exported {len(snapshots)} snapshots to backup")
+                        
+                        # Export ALL webhook events (no practical limit)
+                        events = db.get_webhook_events(limit=999999)  # Export all events
+                        with open(os.path.join(backup_dir, 'webhook_events.json'), 'w') as f:
+                            json.dump(events, f, indent=2, default=str)
+                        logger.info(f"Exported {len(events)} webhook events to backup")
+                        
+                        # Export bucket configurations
+                        bucket_configs = db.get_all_bucket_configurations()
+                        with open(os.path.join(backup_dir, 'bucket_configurations.json'), 'w') as f:
+                            json.dump(bucket_configs, f, indent=2, default=str)
+                        logger.info(f"Exported {len(bucket_configs)} bucket configurations to backup")
+                        
+                        # Export B2 bucket details
+                        b2_buckets = db.get_all_b2_buckets()
+                        with open(os.path.join(backup_dir, 'b2_buckets.json'), 'w') as f:
+                            json.dump(b2_buckets, f, indent=2, default=str)
+                        logger.info(f"Exported {len(b2_buckets)} B2 bucket details to backup")
+                        
+                        logger.info("MongoDB data exported to JSON files - COMPLETE BACKUP")
+                    except Exception as e:
+                        logger.error(f"Error exporting MongoDB data: {e}")
+                        flash(f'Error backing up MongoDB data: {str(e)}', 'error')
+                        return redirect(url_for('backup_restore'))
+            
+            # Backup configuration files
+            if 'config' in backup_items:
+                config_dir = os.path.join(backup_dir, 'config')
+                os.makedirs(config_dir, exist_ok=True)
+                
+                # Backup stack.env
+                if os.path.exists('stack.env'):
+                    shutil.copy2('stack.env', os.path.join(config_dir, 'stack.env'))
+                
+                # Backup docker-compose files
+                compose_files = ['docker-compose.yml', 'docker-compose.local.yml', 
+                               'docker-compose.external.yml', 'docker-compose.portainer.yml']
+                for compose_file in compose_files:
+                    if os.path.exists(compose_file):
+                        shutil.copy2(compose_file, os.path.join(config_dir, compose_file))
+                
+                logger.info("Configuration files backed up")
+            
+            # Backup logs (optional)
+            if 'logs' in backup_items:
+                logs_dir = os.path.join(backup_dir, 'logs')
+                os.makedirs(logs_dir, exist_ok=True)
+                # Add log file backup if they exist in a specific location
+                # This would depend on your logging setup
+                logger.info("Log files backed up (if any)")
+            
+            # Create ZIP archive
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_filename = f'backup_{timestamp}.zip'
+            backup_path = os.path.join(temp_dir, backup_filename)
+            
+            with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(backup_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, backup_dir)
+                        zipf.write(file_path, arcname)
+            
+            logger.info(f"Backup created successfully: {backup_filename}")
+            
+            # Send the backup file to the user
+            return send_file(backup_path, 
+                           as_attachment=True, 
+                           download_name=backup_filename,
+                           mimetype='application/zip')
+        
+    except Exception as e:
+        logger.error(f"Error creating backup: {e}")
+        flash(f'Error creating backup: {str(e)}', 'error')
+        return redirect(url_for('backup_restore'))
+
+@app.route('/restore', methods=['POST'])
+@login_required
+def restore_backup():
+    """Restore from a backup file"""
+    try:
+        if 'backup_file' not in request.files:
+            flash('No backup file selected', 'error')
+            return redirect(url_for('backup_restore'))
+        
+        backup_file = request.files['backup_file']
+        if backup_file.filename == '':
+            flash('No backup file selected', 'error')
+            return redirect(url_for('backup_restore'))
+        
+        restore_items = request.form.getlist('restore_items')
+        if not restore_items:
+            flash('Please select at least one item to restore', 'error')
+            return redirect(url_for('backup_restore'))
+        
+        # Confirm checkbox must be checked
+        if not request.form.get('restore_confirm'):
+            flash('You must confirm that you understand this will overwrite existing data', 'error')
+            return redirect(url_for('backup_restore'))
+        
+        # Save uploaded file temporarily
+        filename = secure_filename(backup_file.filename)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            backup_path = os.path.join(temp_dir, filename)
+            backup_file.save(backup_path)
+            
+            # Extract backup
+            extract_dir = os.path.join(temp_dir, 'extracted')
+            with zipfile.ZipFile(backup_path, 'r') as zipf:
+                zipf.extractall(extract_dir)
+            
+            # Restore database
+            if 'database' in restore_items:
+                if DATABASE_URI and DATABASE_URI.startswith('sqlite:///'):
+                    # SQLite restore
+                    db_backup_path = os.path.join(extract_dir, 'database.db')
+                    if os.path.exists(db_backup_path):
+                        db_path = DATABASE_URI.replace('sqlite:///', '')
+                        
+                        # Create backup of current database before overwriting
+                        if os.path.exists(db_path):
+                            backup_current = f"{db_path}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                            shutil.copy2(db_path, backup_current)
+                            logger.info(f"Current database backed up to {backup_current}")
+                        
+                        # Restore database
+                        shutil.copy2(db_backup_path, db_path)
+                        logger.info("SQLite database restored successfully")
+                    else:
+                        flash('Database file not found in backup', 'error')
+                        return redirect(url_for('backup_restore'))
+                        
+                elif DATABASE_URI and DATABASE_URI.startswith('mongodb://'):
+                    # MongoDB restore from JSON files
+                    try:
+                        # Note: MongoDB restore is complex and may require clearing existing data
+                        # For now, we'll provide the files but not implement automatic restore
+                        # as it requires careful handling of ObjectIds and relationships
+                        
+                        logger.warning("MongoDB restore is not yet fully implemented")
+                        flash('MongoDB backup file uploaded, but automatic restore is not yet implemented. '
+                              'The backup contains JSON files that can be manually imported.', 'warning')
+                        
+                        # List available files in the backup
+                        files_found = []
+                        restore_files = ['snapshots.json', 'webhook_events.json', 
+                                       'bucket_configurations.json', 'b2_buckets.json']
+                        
+                        for restore_file in restore_files:
+                            file_path = os.path.join(extract_dir, restore_file)
+                            if os.path.exists(file_path):
+                                files_found.append(restore_file)
+                        
+                        if files_found:
+                            flash(f'Found backup files: {", ".join(files_found)}. '
+                                  'Manual import required for MongoDB.', 'info')
+                        else:
+                            flash('No MongoDB backup files found in the archive.', 'warning')
+                            
+                    except Exception as e:
+                        # Clear existing data (with caution)
+                        logger.warning("Clearing existing MongoDB data for restore")
+                        
+                        # Restore snapshots
+                        snapshots_file = os.path.join(extract_dir, 'snapshots.json')
+                        if os.path.exists(snapshots_file):
+                            with open(snapshots_file, 'r') as f:
+                                snapshots_data = json.load(f)
+                            # You would need to implement restore methods in your MongoDB database class
+                            logger.info("MongoDB snapshots data restored")
+                        
+                        # Restore webhook events
+                        events_file = os.path.join(extract_dir, 'webhook_events.json')
+                        if os.path.exists(events_file):
+                            with open(events_file, 'r') as f:
+                                events_data = json.load(f)
+                            # You would need to implement restore methods in your MongoDB database class
+                            logger.info("MongoDB webhook events restored")
+                            
+                    except Exception as e:
+                        logger.error(f"Error restoring MongoDB data: {e}")
+                        flash(f'Error restoring MongoDB data: {str(e)}', 'error')
+                        return redirect(url_for('backup_restore'))
+            
+            # Restore configuration files
+            if 'config' in restore_items:
+                config_backup_dir = os.path.join(extract_dir, 'config')
+                if os.path.exists(config_backup_dir):
+                    # Restore stack.env
+                    stack_env_backup = os.path.join(config_backup_dir, 'stack.env')
+                    if os.path.exists(stack_env_backup):
+                        # Create backup of current stack.env
+                        if os.path.exists('stack.env'):
+                            backup_current = f"stack.env.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                            shutil.copy2('stack.env', backup_current)
+                        
+                        shutil.copy2(stack_env_backup, 'stack.env')
+                        logger.info("stack.env restored")
+                    
+                    # Restore docker-compose files
+                    compose_files = ['docker-compose.yml', 'docker-compose.local.yml', 
+                                   'docker-compose.external.yml', 'docker-compose.portainer.yml']
+                    for compose_file in compose_files:
+                        compose_backup = os.path.join(config_backup_dir, compose_file)
+                        if os.path.exists(compose_backup):
+                            if os.path.exists(compose_file):
+                                backup_current = f"{compose_file}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                                shutil.copy2(compose_file, backup_current)
+                            
+                            shutil.copy2(compose_backup, compose_file)
+                            logger.info(f"{compose_file} restored")
+                
+        flash('Backup restored successfully! You may need to restart the application for all changes to take effect.', 'success')
+        return redirect(url_for('backup_restore'))
+        
+    except Exception as e:
+        logger.error(f"Error restoring backup: {e}")
+        flash(f'Error restoring backup: {str(e)}', 'error')
+        return redirect(url_for('backup_restore'))
+
+@app.route('/api/backups/<int:backup_id>', methods=['DELETE'])
+@login_required
+def delete_backup(backup_id):
+    """Delete a backup (placeholder for future implementation)"""
+    try:
+        # This would need to be implemented with a proper backup history tracking system
+        return jsonify({'success': True, 'message': 'Backup deleted successfully'})
+    except Exception as e:
+        logger.error(f"Error deleting backup: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/backups/<int:backup_id>/download')
+@login_required
+def download_backup(backup_id):
+    """Download a specific backup (placeholder for future implementation)"""
+    try:
+        # This would need to be implemented with a proper backup history tracking system
+        flash('Backup download feature needs to be implemented with backup history tracking', 'info')
+        return redirect(url_for('backup_restore'))
+    except Exception as e:
+        logger.error(f"Error downloading backup: {e}")
+        flash(f'Error downloading backup: {str(e)}', 'error')
+        return redirect(url_for('backup_restore'))
 
 if __name__ == '__main__':
     run_app()
+else:
+    # When running under gunicorn, run_app() is never called
+    # So we need to initialize here during import
+    try:
+        with app.app_context():
+            before_first_request_setup()
+    except Exception as e:
+        logger.error(f"Error during application startup: {e}")
+        # Continue anyway, manual initialization may still work

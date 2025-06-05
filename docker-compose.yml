@@ -8,24 +8,24 @@ networks:
     name: ${STACK_NAME:-bbssr}_db_network
     driver: bridge
 
-x-postgres-condition: &postgres-condition
-  condition: service_healthy
-  required: false
-
 x-redis-condition: &redis-condition
   condition: service_healthy
-  required: true
+
+# MongoDB condition (service dependency)
+x-mongodb-condition: &mongodb-condition
+  condition: service_healthy
 
 services:
   web:
     container_name: ${STACK_NAME:-bbssr}_web
-    build: .
-    image: bbssr
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
     ports:
       - "${APP_PORT:-5000}:5000"
     volumes:
       - bbssr_data:/data
-    restart: unless-stopped
     networks:
       - app_network
       - db_network
@@ -38,8 +38,8 @@ services:
       retries: 3
       start_period: 40s
     depends_on:
-      postgres: *postgres-condition
-      redis: *redis-condition
+      redis: *redis-condition  # Redis enabled for Celery
+      mongodb: *mongodb-condition
 
   redis:
     container_name: ${STACK_NAME:-bbssr}_redis
@@ -56,29 +56,68 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-    deploy:
-      # Redis will start if REDIS_ENABLED=true (default)
-      replicas: ${REDIS_ENABLED:-1}
-            
-  postgres:
-    container_name: ${STACK_NAME:-bbssr}_postgres
-    image: postgres:14-alpine
+
+  # Celery worker for async webhook processing
+  celery_worker:
+    container_name: ${STACK_NAME:-bbssr}_celery_worker
+    build: 
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     volumes:
-      - bbssr_db:/var/lib/postgresql/data
+      - bbssr_data:/data
+    networks:
+      - app_network
+      - db_network
     env_file:
       - stack.env
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=4
+    depends_on:
+      redis: *redis-condition
+      mongodb: *mongodb-condition
+
+  # Celery monitoring with Flower
+  celery_flower:
+    container_name: ${STACK_NAME:-bbssr}_flower
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5555:5555"
+    volumes:
+      - bbssr_data:/data
+    networks:
+      - app_network
+    env_file:
+      - stack.env
+    command: celery -A app.celery_app flower --port=5555
+    depends_on:
+      redis: *redis-condition
+    deploy:
+      replicas: 1  # Optional - set to 0 to disable Flower
+
+  mongodb:
+    container_name: ${STACK_NAME:-bbssr}_mongodb
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - bbssr_db:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGODB_USER:-bbssr_user}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD:-secure_password}
+      MONGO_INITDB_DATABASE: ${MONGODB_DB:-bbssr_db}
     networks:
       - db_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bbssr_user} -d ${POSTGRES_DB:-bbssr_db}"]
-      interval: 10s
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
       timeout: 5s
       retries: 5
-      start_period: 10s
-    deploy:
-      # Service will only start if USE_POSTGRES=true
-      replicas: ${USE_POSTGRES:-0}
+      start_period: 40s
+
 
   cloudflared:
     container_name: ${STACK_NAME:-bbssr}_cloudflared

@@ -1,87 +1,100 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
-Database initialization script for Backblaze Snapshot Reporting.
+Database initialization script
+Creates the initial database and tables if they don't exist
 
-This script ensures the database exists and has the required tables.
+Usage:
+    python -m scripts.init_db [database_path]
 """
 
 import os
 import sys
-import sqlite3
 import logging
-from pathlib import Path
+
+# Add the app directory to the path so we can import our modules
+sys.path.insert(0, '/app')
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-def init_db(db_path):
+def init_database(db_path=None):
     """Initialize the database with required tables"""
-    logger.info(f"Initializing database at {db_path}")
-    
-    # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    
-    # Create database connection
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
     try:
-        # Create snapshots table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            total_storage_bytes INTEGER NOT NULL,
-            total_storage_cost REAL NOT NULL,
-            total_download_bytes INTEGER NOT NULL,
-            total_download_cost REAL NOT NULL,
-            total_api_calls INTEGER NOT NULL,
-            total_api_cost REAL NOT NULL,
-            total_cost REAL NOT NULL,
-            raw_data TEXT NOT NULL
-        )
-        ''')
+        # Import our database class
+        from app.models.database import Database
         
-        # Create bucket snapshots table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS bucket_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            snapshot_id INTEGER NOT NULL,
-            bucket_name TEXT NOT NULL,
-            storage_bytes INTEGER NOT NULL,
-            storage_cost REAL NOT NULL,
-            download_bytes INTEGER NOT NULL,
-            download_cost REAL NOT NULL,
-            api_calls INTEGER NOT NULL,
-            api_cost REAL NOT NULL,
-            total_cost REAL NOT NULL,
-            FOREIGN KEY (snapshot_id) REFERENCES snapshots (id)
-        )
-        ''')
+        # Use provided path or default
+        if not db_path:
+            db_path = os.getenv('SQLITE_PATH', '/data/backblaze_snapshots.db')
         
-        conn.commit()
-        logger.info("Database initialized successfully")
+        logger.info(f"Initializing database at: {db_path}")
+        
+        # Ensure the directory exists
+        db_dir = os.path.dirname(db_path)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+            logger.info(f"Created directory: {db_dir}")
+        
+        # Check if we can write to the directory
+        if not os.access(db_dir, os.W_OK):
+            logger.error(f"Cannot write to directory: {db_dir}")
+            return False
+        
+        # Initialize the database (this will create tables if they don't exist)
+        db = Database(db_path)
+        
+        # Test basic functionality
+        with db._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check that tables were created
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in cursor.fetchall()]
+            
+            logger.info(f"Database initialized with tables: {tables}")
+            
+            if not tables:
+                logger.warning("No tables found in database - this may indicate an issue")
+                return False
+            
+            # Basic connectivity test
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+            if result and result[0] == 1:
+                logger.info("✓ Database connectivity test passed")
+            else:
+                logger.error("✗ Database connectivity test failed")
+                return False
+        
+        logger.info(f"✓ Database successfully initialized at {db_path}")
+        return True
         
     except Exception as e:
-        conn.rollback()
-        logger.error(f"Error initializing database: {e}")
-        raise
-    finally:
-        conn.close()
+        logger.error(f"Failed to initialize database: {e}")
+        return False
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        db_path = sys.argv[1]
-    else:
-        # Default path
-        db_path = os.environ.get('DATABASE_URI', 'sqlite:///backblaze_snapshots.db')
-        if db_path.startswith('sqlite:///'):
-            db_path = db_path.replace('sqlite:///', '')
+def main():
+    """Main function for command line usage"""
+    import argparse
     
-    init_db(db_path)
-    logger.info("Database initialization complete")
+    parser = argparse.ArgumentParser(description="Initialize the BBSSR database")
+    parser.add_argument('database_path', nargs='?', 
+                       help='Path to the database file (default: from environment or /data/backblaze_snapshots.db)')
+    
+    args = parser.parse_args()
+    
+    success = init_database(args.database_path)
+    
+    if success:
+        logger.info("Database initialization completed successfully")
+        sys.exit(0)
+    else:
+        logger.error("Database initialization failed")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()

@@ -42,6 +42,7 @@ venv.bak/
 
 # Logs
 *.log
+logs/
 
 # IDE
 .idea/
@@ -51,3 +52,45 @@ venv.bak/
 
 # Docker
 .dockerignore
+*.tar
+*.tar.gz
+docker-compose.override.yml
+
+# Credentials and secrets
+credentials.json
+secrets.json
+*.key
+*.pem
+*.crt
+*secret*
+*credential*
+
+# Backup files
+backup_*
+*.backup
+*.bak
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Instance and runtime data
+instance/
+data/
+*.pid
+
+# Test artifacts
+test_results/
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Debug files
+debug_*.py
+test_debug_*.py
